@@ -1,3 +1,4 @@
+const APP_TITLE = "CSV 3D Explorer";
 const DEFAULT_TITLE_SUFFIX = "3D Interactive Dashboard";
 const MAX_CATEGORICAL_COLOR_LEVELS = 30;
 const NONE_OPTION = "__none__";
@@ -17,18 +18,59 @@ const loadingState = document.getElementById("loading-state");
 const loadingTitle = document.getElementById("loading-title");
 const dashboardTab = document.getElementById("dashboard-tab");
 const statisticsTab = document.getElementById("statistics-tab");
+const correlationTab = document.getElementById("correlation-tab");
 const dashboardPanel = document.getElementById("dashboard-panel");
 const statisticsPanel = document.getElementById("statistics-panel");
+const correlationPanel = document.getElementById("correlation-panel");
 const statsToolbar = document.getElementById("stats-toolbar");
 const statsNumericDownloadButton = document.getElementById("stats-download-numeric-button");
 const statsCategoricalDownloadButton = document.getElementById("stats-download-categorical-button");
 const statsSheet = document.getElementById("stats-sheet");
 const categorySheet = document.getElementById("category-sheet");
+const corrPairModeButton = document.getElementById("corr-pair-mode-button");
+const corrMatrixModeButton = document.getElementById("corr-matrix-mode-button");
+const corrPairPanel = document.getElementById("corr-pair-panel");
+const corrMatrixPanel = document.getElementById("corr-matrix-panel");
+const corrXSelect = document.getElementById("corr-x-select");
+const corrYSelect = document.getElementById("corr-y-select");
+const corrAlphaSlider = document.getElementById("corr-alpha-slider");
+const corrAlphaValue = document.getElementById("corr-alpha-value");
+const corrPairMetrics = document.getElementById("corr-pair-metrics");
+const corrPairPlot = document.getElementById("corr-pair-plot");
+const corrMatrixMethod = document.getElementById("corr-matrix-method");
+const corrMatrixToggles = document.getElementById("corr-matrix-toggles");
+const corrSelectAllButton = document.getElementById("corr-select-all");
+const corrClearAllButton = document.getElementById("corr-clear-all");
+const corrMatrixHeatmap = document.getElementById("corr-matrix-heatmap");
+const corrFocusTitle = document.getElementById("corr-focus-title");
+const corrFocusPlot = document.getElementById("corr-focus-plot");
+const corrPairResetButton = document.getElementById("corr-pair-reset-button");
+const corrFocusResetButton = document.getElementById("corr-focus-reset-button");
+const corrPairSaveButton = document.getElementById("corr-pair-save-button");
+const corrFocusSaveButton = document.getElementById("corr-focus-save-button");
 const emptyStateKicker = document.querySelector(".empty-state-kicker");
 const emptyStateTitle = document.querySelector(".empty-state-title");
 const emptyStateCopy = document.querySelector(".empty-state-copy");
 let currentPayload = null;
 let selectedStatsColumns = [];
+let activeOuterView = "dashboard";
+let correlationMode = "pair";
+let selectedMatrixColumns = [];
+let focusedMatrixPair = null;
+let currentMatrixPairLookup = new Map();
+const STAT_TERM_EXPLANATIONS = {
+  "Parameter": "The dataset feature (column) this row represents.",
+  "Mean ± Std": "Mean is the average value. Std (standard deviation) shows how spread out the values are around the mean.",
+  "Median": "The middle value when the data is sorted.",
+  "[Min, Max]": "The smallest and largest observed values.",
+  "[Q1, Q3]": "Q1 is the 25th percentile and Q3 is the 75th percentile. The middle 50% lies between them.",
+  "Skewness": "How asymmetric the distribution is. Positive means a longer right tail, negative means a longer left tail.",
+  "Kurtosis": "How heavy the tails are compared with a normal distribution. Higher values mean more extreme outliers.",
+  "Count": "Number of non-empty entries in this categorical column.",
+  "Unique Values": "Number of distinct category values.",
+  "Top Value": "Most frequent category value (mode).",
+  "Top Frequency": "How many times the top value appears.",
+};
 
 function setViewerContext(text) {
   if (viewerContext) {
@@ -236,6 +278,13 @@ function safeDatasetStem() {
   return stem.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "dataset";
 }
 
+function safeFilenamePart(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "value";
+}
+
 function downloadNumericStatsCsv() {
   if (!currentPayload || !selectedStatsColumns.length) return;
 
@@ -347,7 +396,7 @@ function renderStatsTable() {
   const headers = ["Parameter", "Mean ± Std", "Median", "[Min, Max]", "[Q1, Q3]", "Skewness", "Kurtosis"];
   let html = '<table class="stats-table"><thead><tr>';
   headers.forEach((header) => {
-    html += `<th>${escapeHtml(header)}</th>`;
+    html += renderStatsHeaderCell(header);
   });
   html += "</tr></thead><tbody>";
 
@@ -383,7 +432,7 @@ function renderCategoricalSummary() {
   const headers = ["Parameter", "Count", "Unique Values", "Top Value", "Top Frequency"];
   let html = '<table class="stats-table"><thead><tr>';
   headers.forEach((header) => {
-    html += `<th>${escapeHtml(header)}</th>`;
+    html += renderStatsHeaderCell(header);
   });
   html += "</tr></thead><tbody>";
 
@@ -400,13 +449,632 @@ function renderCategoricalSummary() {
   updateCategoricalSheetHeight(categoricalColumns.length);
 }
 
+function populateSimpleSelect(select, options, selectedValue) {
+  if (!select) return;
+  select.innerHTML = "";
+  options.forEach((value) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  });
+  if (selectedValue && options.includes(selectedValue)) {
+    select.value = selectedValue;
+  } else if (options.length) {
+    select.value = options[0];
+  }
+}
+
+function hasPlotly() {
+  return typeof Plotly !== "undefined";
+}
+
+function renderCorrelationEmpty(target, message) {
+  if (!target) return;
+  target.innerHTML = `<div class="corr-empty">${escapeHtml(String(message))}</div>`;
+}
+
+function formatCorrelationValue(value) {
+  if (value === null || value === undefined || Number.isNaN(value) || !Number.isFinite(value)) return "N/A";
+  return value.toFixed(4);
+}
+
+function getAlignedNumericPair(payload, xColumn, yColumn) {
+  const xValues = [];
+  const yValues = [];
+  payload.records.forEach((row) => {
+    const x = toFiniteNumber(row[xColumn]);
+    const y = toFiniteNumber(row[yColumn]);
+    if (x === null || y === null) return;
+    xValues.push(x);
+    yValues.push(y);
+  });
+  return { xValues, yValues };
+}
+
+function pearsonCorrelation(xValues, yValues) {
+  const n = xValues.length;
+  if (n < 2 || n !== yValues.length) return null;
+
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = 0; i < n; i += 1) {
+    sumX += xValues[i];
+    sumY += yValues[i];
+  }
+  const meanX = sumX / n;
+  const meanY = sumY / n;
+
+  let covariance = 0;
+  let varianceX = 0;
+  let varianceY = 0;
+  for (let i = 0; i < n; i += 1) {
+    const dx = xValues[i] - meanX;
+    const dy = yValues[i] - meanY;
+    covariance += dx * dy;
+    varianceX += dx * dx;
+    varianceY += dy * dy;
+  }
+  if (varianceX === 0 || varianceY === 0) return null;
+  return covariance / Math.sqrt(varianceX * varianceY);
+}
+
+function rankWithTies(values) {
+  const indexed = values.map((value, index) => ({ value, index }));
+  indexed.sort((a, b) => a.value - b.value);
+  const ranks = new Array(values.length);
+  let i = 0;
+  while (i < indexed.length) {
+    let j = i;
+    while (j + 1 < indexed.length && indexed[j + 1].value === indexed[i].value) {
+      j += 1;
+    }
+    const avgRank = ((i + 1) + (j + 1)) / 2;
+    for (let k = i; k <= j; k += 1) {
+      ranks[indexed[k].index] = avgRank;
+    }
+    i = j + 1;
+  }
+  return ranks;
+}
+
+function spearmanCorrelation(xValues, yValues) {
+  if (xValues.length < 2 || xValues.length !== yValues.length) return null;
+  const xRanks = rankWithTies(xValues);
+  const yRanks = rankWithTies(yValues);
+  return pearsonCorrelation(xRanks, yRanks);
+}
+
+function pairCorrelationSummary(payload, xColumn, yColumn) {
+  const aligned = getAlignedNumericPair(payload, xColumn, yColumn);
+  return {
+    n: aligned.xValues.length,
+    pearson: pearsonCorrelation(aligned.xValues, aligned.yValues),
+    spearman: spearmanCorrelation(aligned.xValues, aligned.yValues),
+  };
+}
+
+function linearRegression(xValues, yValues) {
+  const n = xValues.length;
+  if (n < 2 || n !== yValues.length) return null;
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = 0; i < n; i += 1) {
+    sumX += xValues[i];
+    sumY += yValues[i];
+  }
+  const meanX = sumX / n;
+  const meanY = sumY / n;
+
+  let varianceX = 0;
+  let covariance = 0;
+  for (let i = 0; i < n; i += 1) {
+    const dx = xValues[i] - meanX;
+    const dy = yValues[i] - meanY;
+    varianceX += dx * dx;
+    covariance += dx * dy;
+  }
+  if (varianceX === 0) return null;
+
+  const slope = covariance / varianceX;
+  const intercept = meanY - (slope * meanX);
+  const minX = Math.min(...xValues);
+  const maxX = Math.max(...xValues);
+  return {
+    slope,
+    intercept,
+    xLine: [minX, maxX],
+    yLine: [slope * minX + intercept, slope * maxX + intercept],
+  };
+}
+
+function pairKey(left, right) {
+  return left < right ? `${left}|||${right}` : `${right}|||${left}`;
+}
+
+function reset2DPlotZoom(plotId) {
+  const node = document.getElementById(plotId);
+  if (!node || !hasPlotly() || !node.data) return;
+  Plotly.relayout(node, {
+    "xaxis.autorange": true,
+    "yaxis.autorange": true,
+  });
+}
+
+function download2DPlotImage(plotId, filename) {
+  const node = document.getElementById(plotId);
+  if (!node || !hasPlotly() || !node.data) return;
+  Plotly.downloadImage(node, {
+    format: "png",
+    scale: 2,
+    width: 1400,
+    height: 900,
+    filename,
+  });
+}
+
+function ensureDistinctPairSelection() {
+  if (!currentPayload || !corrXSelect || !corrYSelect) return;
+  const numericColumns = currentPayload.numeric_columns;
+  if (!numericColumns.length) return;
+  if (!numericColumns.includes(corrXSelect.value)) corrXSelect.value = numericColumns[0];
+  if (!numericColumns.includes(corrYSelect.value)) corrYSelect.value = numericColumns[Math.min(1, numericColumns.length - 1)];
+  if (corrXSelect.value === corrYSelect.value && numericColumns.length > 1) {
+    const alternate = numericColumns.find((column) => column !== corrXSelect.value);
+    if (alternate) corrYSelect.value = alternate;
+  }
+}
+
+function currentCorrelationPointOpacity() {
+  const fallback = 0.78;
+  if (!corrAlphaSlider) return fallback;
+  const parsed = Number(corrAlphaSlider.value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0.15, Math.min(1, parsed));
+}
+
+function updateCorrelationAlphaLabel() {
+  const value = currentCorrelationPointOpacity();
+  if (corrAlphaValue) {
+    corrAlphaValue.textContent = `${Math.round(value * 100)}%`;
+  }
+  if (corrAlphaSlider) {
+    const min = 0.15;
+    const max = 1;
+    const progress = ((value - min) / (max - min)) * 100;
+    corrAlphaSlider.style.setProperty("--alpha-progress", `${Math.max(0, Math.min(100, progress))}%`);
+  }
+}
+
+function metricToneClass(value) {
+  if (!Number.isFinite(value)) return "";
+  if (value > 0.15) return "corr-metric-card--positive";
+  if (value < -0.15) return "corr-metric-card--negative";
+  return "";
+}
+
+function renderPairMetrics(summary, regression) {
+  if (!corrPairMetrics) return;
+  const slopeValue = regression ? regression.slope : null;
+  const interceptValue = regression ? regression.intercept : null;
+  const items = [
+    { label: "Pearson", value: formatCorrelationValue(summary.pearson), raw: summary.pearson, badge: "r" },
+    { label: "Spearman", value: formatCorrelationValue(summary.spearman), raw: summary.spearman, badge: "rs" },
+    { label: "Rows Used", value: summary.n.toLocaleString(), raw: null, badge: "n" },
+    { label: "Slope", value: formatCorrelationValue(slopeValue), raw: slopeValue, badge: "m" },
+    { label: "Intercept", value: formatCorrelationValue(interceptValue), raw: interceptValue, badge: "b" },
+  ];
+
+  corrPairMetrics.innerHTML = items.map((item) => `
+      <div class="corr-metric-card ${metricToneClass(item.raw)}">
+        <div class="corr-metric-badge">${escapeHtml(item.badge)}</div>
+        <div class="corr-metric-label">${escapeHtml(item.label)}</div>
+        <div class="corr-metric-value">${escapeHtml(String(item.value))}</div>
+      </div>
+    `).join("");
+}
+
+function renderPairScatterPlot(xColumn, yColumn, aligned, summary, targetId, regression = null) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  if (aligned.xValues.length < 2) {
+    renderCorrelationEmpty(target, "Not enough overlapping numeric rows to plot this pair.");
+    return;
+  }
+  if (!hasPlotly()) {
+    renderCorrelationEmpty(target, "Plotly is not loaded, so charts are unavailable.");
+    return;
+  }
+
+  const traces = [{
+    type: "scatter",
+    mode: "markers",
+    x: aligned.xValues,
+    y: aligned.yValues,
+    marker: {
+      color: "#8d34ea",
+      size: 8,
+      opacity: currentCorrelationPointOpacity(),
+      line: { width: 0 },
+    },
+    hovertemplate: `${escapeHtml(xColumn)}: %{x}<br>${escapeHtml(yColumn)}: %{y}<extra></extra>`,
+    name: "Rows",
+  }];
+
+  const resolvedRegression = regression || linearRegression(aligned.xValues, aligned.yValues);
+  if (resolvedRegression) {
+    traces.push({
+      type: "scatter",
+      mode: "lines",
+      x: resolvedRegression.xLine,
+      y: resolvedRegression.yLine,
+      line: {
+        color: "#f59e0b",
+        width: 2.5,
+      },
+      hovertemplate: "Regression line<extra></extra>",
+      name: "Regression",
+    });
+  }
+
+  target.innerHTML = "";
+  const fitText = resolvedRegression
+    ? `y = ${resolvedRegression.slope.toFixed(4)}x + ${resolvedRegression.intercept.toFixed(4)}`
+    : "No regression (insufficient variance)";
+  const corrText = `Pearson: ${formatCorrelationValue(summary.pearson)} | Spearman: ${formatCorrelationValue(summary.spearman)} | N: ${summary.n.toLocaleString()}`;
+
+  let renderPromise;
+  try {
+    renderPromise = Plotly.newPlot(targetId, traces, {
+    paper_bgcolor: "rgba(18, 20, 28, 0.92)",
+    plot_bgcolor: "#ffffff",
+    font: { family: '"Inter", "Segoe UI Variable", "Segoe UI", sans-serif', color: "#e8ebf4" },
+    margin: { l: 54, r: 20, t: 56, b: 50 },
+    legend: {
+      orientation: "h",
+      yanchor: "bottom",
+      y: 1.01,
+      xanchor: "left",
+      x: 0,
+      bgcolor: "rgba(16, 18, 26, 0.84)",
+      bordercolor: "rgba(174, 92, 255, 0.28)",
+      borderwidth: 1,
+      font: { color: "#e8ebf4" },
+    },
+    xaxis: {
+      title: { text: `X: ${xColumn}`, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
+      tickfont: { color: "#e8ebf4" },
+      gridcolor: "rgba(16, 33, 50, 0.16)",
+      zerolinecolor: "rgba(16, 33, 50, 0.2)",
+    },
+    yaxis: {
+      title: { text: `Y: ${yColumn}`, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
+      tickfont: { color: "#e8ebf4" },
+      gridcolor: "rgba(16, 33, 50, 0.16)",
+      zerolinecolor: "rgba(16, 33, 50, 0.2)",
+    },
+    annotations: [{
+      xref: "paper",
+      yref: "paper",
+      x: 0.01,
+      y: 0.995,
+      xanchor: "left",
+      yanchor: "top",
+      align: "left",
+      showarrow: false,
+      text: `${fitText}<br>${corrText}`,
+      font: { size: 12, color: "#e8ebf4" },
+      bgcolor: "rgba(16, 18, 26, 0.84)",
+      bordercolor: "rgba(174, 92, 255, 0.28)",
+      borderwidth: 1,
+      borderpad: 6,
+    }],
+  }, {
+    responsive: true,
+    displaylogo: false,
+    modeBarButtonsToRemove: ["lasso2d", "select2d"],
+  });
+  } catch (error) {
+    renderCorrelationEmpty(target, "Could not render this scatter plot for the selected variables.");
+    return;
+  }
+  if (renderPromise && typeof renderPromise.then === "function") {
+    renderPromise.then(() => {
+      const node = document.getElementById(targetId);
+      if (node && node.data) Plotly.Plots.resize(node);
+    }).catch(() => {
+      renderCorrelationEmpty(target, "Could not render this scatter plot for the selected variables.");
+    });
+  }
+}
+
+function renderCorrelationPairExplorer() {
+  if (!corrPairPanel) return;
+  if (!currentPayload) {
+    if (corrPairMetrics) corrPairMetrics.innerHTML = "";
+    renderCorrelationEmpty(corrPairPlot, "Upload a CSV to start exploring correlations.");
+    return;
+  }
+
+  const numericColumns = currentPayload.numeric_columns;
+  if (numericColumns.length < 2) {
+    if (corrPairMetrics) corrPairMetrics.innerHTML = "";
+    renderCorrelationEmpty(corrPairPlot, "At least two numeric columns are required.");
+    return;
+  }
+
+  populateSimpleSelect(corrXSelect, numericColumns, corrXSelect?.value || numericColumns[0]);
+  populateSimpleSelect(corrYSelect, numericColumns, corrYSelect?.value || numericColumns[Math.min(1, numericColumns.length - 1)]);
+  ensureDistinctPairSelection();
+
+  const xColumn = corrXSelect.value;
+  const yColumn = corrYSelect.value;
+  const aligned = getAlignedNumericPair(currentPayload, xColumn, yColumn);
+  const summary = {
+    n: aligned.xValues.length,
+    pearson: pearsonCorrelation(aligned.xValues, aligned.yValues),
+    spearman: spearmanCorrelation(aligned.xValues, aligned.yValues),
+  };
+  const regression = linearRegression(aligned.xValues, aligned.yValues);
+  renderPairMetrics(summary, regression);
+  renderPairScatterPlot(xColumn, yColumn, aligned, summary, "corr-pair-plot", regression);
+}
+
+function buildMatrixSummaries(payload, columns, method) {
+  const matrix = columns.map(() => columns.map(() => null));
+  const summaries = [];
+  const summaryLookup = new Map();
+  for (let i = 0; i < columns.length; i += 1) {
+    matrix[i][i] = 1;
+    for (let j = i + 1; j < columns.length; j += 1) {
+      const left = columns[i];
+      const right = columns[j];
+      const summary = pairCorrelationSummary(payload, left, right);
+      const methodValue = method === "spearman" ? summary.spearman : summary.pearson;
+      matrix[i][j] = methodValue;
+      matrix[j][i] = methodValue;
+      summaries.push({
+        xColumn: left,
+        yColumn: right,
+        n: summary.n,
+        pearson: summary.pearson,
+        spearman: summary.spearman,
+        methodValue,
+        absMethodValue: methodValue === null ? -1 : Math.abs(methodValue),
+      });
+      summaryLookup.set(pairKey(left, right), summaries[summaries.length - 1]);
+    }
+  }
+  summaries.sort((a, b) => b.absMethodValue - a.absMethodValue);
+  return {
+    matrix,
+    summaries,
+    summaryLookup,
+    defaultPair: summaries[0] ? { xColumn: summaries[0].xColumn, yColumn: summaries[0].yColumn } : null,
+  };
+}
+
+function resizeCorrelationPlots() {
+  if (!hasPlotly()) return;
+  ["corr-pair-plot", "corr-matrix-heatmap", "corr-focus-plot"].forEach((id) => {
+    const node = document.getElementById(id);
+    if (node && node.data) Plotly.Plots.resize(node);
+  });
+}
+
+function renderCorrelationToggles() {
+  if (!corrMatrixToggles) return;
+  corrMatrixToggles.innerHTML = "";
+  if (!currentPayload) return;
+
+  currentPayload.numeric_columns.forEach((column) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "corr-toggle" + (selectedMatrixColumns.includes(column) ? " active" : "");
+    button.textContent = column;
+    button.addEventListener("click", () => {
+      if (selectedMatrixColumns.includes(column)) {
+        selectedMatrixColumns = selectedMatrixColumns.filter((value) => value !== column);
+      } else {
+        selectedMatrixColumns = [...selectedMatrixColumns, column];
+      }
+      focusedMatrixPair = null;
+      renderCorrelationMatrixExplorer();
+    });
+    corrMatrixToggles.appendChild(button);
+  });
+}
+
+function renderFocusedMatrixScatter() {
+  if (!corrFocusTitle || !corrFocusPlot) return;
+  if (!currentPayload || !focusedMatrixPair) {
+    corrFocusTitle.textContent = "Click a matrix cell to inspect its scatter.";
+    renderCorrelationEmpty(corrFocusPlot, "Click an off-diagonal matrix cell.");
+    return;
+  }
+
+  const { xColumn, yColumn } = focusedMatrixPair;
+  if (xColumn === yColumn) {
+    corrFocusTitle.textContent = "Click an off-diagonal matrix cell to compare two different variables.";
+    renderCorrelationEmpty(corrFocusPlot, "Diagonal cells are self-correlation. Choose two different variables.");
+    return;
+  }
+  const aligned = getAlignedNumericPair(currentPayload, xColumn, yColumn);
+  const summary = {
+    n: aligned.xValues.length,
+    pearson: pearsonCorrelation(aligned.xValues, aligned.yValues),
+    spearman: spearmanCorrelation(aligned.xValues, aligned.yValues),
+  };
+  const regression = linearRegression(aligned.xValues, aligned.yValues);
+  corrFocusTitle.textContent = `${xColumn} vs ${yColumn} | Pearson: ${formatCorrelationValue(summary.pearson)} | Spearman: ${formatCorrelationValue(summary.spearman)} | Slope: ${formatCorrelationValue(regression?.slope ?? null)} | Intercept: ${formatCorrelationValue(regression?.intercept ?? null)} | N: ${summary.n.toLocaleString()}`;
+  renderPairScatterPlot(xColumn, yColumn, aligned, summary, "corr-focus-plot", regression);
+}
+
+function rerenderCorrelationScatterViews() {
+  if (!currentPayload) return;
+  if (correlationMode === "pair") {
+    renderCorrelationPairExplorer();
+    return;
+  }
+  renderFocusedMatrixScatter();
+}
+
+function renderCorrelationMatrixExplorer() {
+  if (!corrMatrixPanel) return;
+  if (!currentPayload) {
+    if (corrMatrixToggles) corrMatrixToggles.innerHTML = "";
+    renderCorrelationEmpty(corrMatrixHeatmap, "Upload a CSV to build a correlation matrix.");
+    renderCorrelationEmpty(corrFocusPlot, "Click an off-diagonal matrix cell.");
+    if (corrFocusTitle) corrFocusTitle.textContent = "Click a matrix cell to inspect its scatter.";
+    return;
+  }
+
+  const numericColumns = currentPayload.numeric_columns;
+  selectedMatrixColumns = selectedMatrixColumns.filter((column) => numericColumns.includes(column));
+  renderCorrelationToggles();
+
+  if (selectedMatrixColumns.length < 2) {
+    renderCorrelationEmpty(corrMatrixHeatmap, "Select at least two numeric parameters.");
+    renderCorrelationEmpty(corrFocusPlot, "Select at least two numeric parameters.");
+    if (corrFocusTitle) corrFocusTitle.textContent = "Click a matrix cell to inspect its scatter.";
+    return;
+  }
+
+  const method = corrMatrixMethod?.value === "spearman" ? "spearman" : "pearson";
+  const built = buildMatrixSummaries(currentPayload, selectedMatrixColumns, method);
+  currentMatrixPairLookup = built.summaryLookup;
+
+  if (!hasPlotly()) {
+    renderCorrelationEmpty(corrMatrixHeatmap, "Plotly is not loaded, so charts are unavailable.");
+  } else {
+    corrMatrixHeatmap.innerHTML = "";
+    const heatmapPromise = Plotly.newPlot("corr-matrix-heatmap", [{
+      type: "heatmap",
+      z: built.matrix,
+      x: selectedMatrixColumns,
+      y: selectedMatrixColumns,
+      zmin: -1,
+      zmax: 1,
+      colorscale: [
+        [0, "#3b0f70"],
+        [0.25, "#6c2ab9"],
+        [0.5, "#f8fafc"],
+        [0.75, "#41b6c4"],
+        [1, "#1f8a70"],
+      ],
+      colorbar: {
+        title: method === "spearman" ? "Spearman" : "Pearson",
+        tickcolor: "#a8b0c0",
+        tickfont: { color: "#a8b0c0" },
+      },
+      hovertemplate: "%{x} vs %{y}<br>Correlation: %{z:.4f}<extra></extra>",
+    }], {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      margin: { l: 90, r: 34, t: 18, b: 90 },
+      font: { family: '"Inter", "Segoe UI Variable", "Segoe UI", sans-serif', color: "#e8ebf4" },
+      xaxis: {
+        tickangle: -35,
+        automargin: true,
+      },
+      yaxis: {
+        automargin: true,
+      },
+    }, {
+      responsive: true,
+      displaylogo: false,
+      modeBarButtonsToRemove: ["lasso2d", "select2d"],
+    });
+    if (heatmapPromise && typeof heatmapPromise.then === "function") {
+      heatmapPromise.then(() => {
+        const node = corrMatrixHeatmap;
+        if (!node || typeof node.on !== "function") return;
+        if (typeof node.removeAllListeners === "function") {
+          node.removeAllListeners("plotly_click");
+        }
+        node.on("plotly_click", (event) => {
+          const point = event?.points?.[0];
+          if (!point) return;
+          const xColumn = String(point.x);
+          const yColumn = String(point.y);
+          if (xColumn === yColumn) {
+            focusedMatrixPair = { xColumn, yColumn };
+            renderFocusedMatrixScatter();
+            return;
+          }
+          focusedMatrixPair = { xColumn, yColumn };
+          renderFocusedMatrixScatter();
+        });
+        Plotly.Plots.resize(node);
+      });
+    }
+  }
+
+  const focusedStillValid = focusedMatrixPair && currentMatrixPairLookup.has(pairKey(focusedMatrixPair.xColumn, focusedMatrixPair.yColumn));
+  if (!focusedStillValid) {
+    focusedMatrixPair = built.defaultPair;
+  }
+  renderFocusedMatrixScatter();
+}
+
+function setCorrelationMode(mode) {
+  correlationMode = mode === "matrix" ? "matrix" : "pair";
+  if (corrPairModeButton) corrPairModeButton.classList.toggle("active", correlationMode === "pair");
+  if (corrMatrixModeButton) corrMatrixModeButton.classList.toggle("active", correlationMode === "matrix");
+  if (corrPairPanel) corrPairPanel.classList.toggle("hidden", correlationMode !== "pair");
+  if (corrMatrixPanel) corrMatrixPanel.classList.toggle("hidden", correlationMode !== "matrix");
+
+  if (correlationMode === "pair") {
+    renderCorrelationPairExplorer();
+  } else {
+    renderCorrelationMatrixExplorer();
+  }
+  setTimeout(() => resizeCorrelationPlots(), 0);
+}
+
+function renderCorrelationView() {
+  if (!currentPayload) {
+    if (corrPairMetrics) corrPairMetrics.innerHTML = "";
+    renderCorrelationEmpty(corrPairPlot, "Upload a CSV to start exploring correlations.");
+    renderCorrelationEmpty(corrMatrixHeatmap, "Upload a CSV to build a correlation matrix.");
+    renderCorrelationEmpty(corrFocusPlot, "Click an off-diagonal matrix cell.");
+    if (corrFocusTitle) corrFocusTitle.textContent = "Click a matrix cell to inspect its scatter.";
+    return;
+  }
+
+  const numericColumns = currentPayload.numeric_columns;
+  if (numericColumns.length >= 2) {
+    populateSimpleSelect(corrXSelect, numericColumns, corrXSelect?.value || numericColumns[0]);
+    populateSimpleSelect(corrYSelect, numericColumns, corrYSelect?.value || numericColumns[Math.min(1, numericColumns.length - 1)]);
+    ensureDistinctPairSelection();
+  }
+
+  setCorrelationMode(correlationMode);
+}
+
 function setOuterView(view) {
-  if (!dashboardTab || !statisticsTab || !dashboardPanel || !statisticsPanel) return;
+  activeOuterView = view;
+  if (!dashboardTab || !statisticsTab || !correlationTab || !dashboardPanel || !statisticsPanel || !correlationPanel) return;
   const showDashboard = view === "dashboard";
+  const showStatistics = view === "statistics";
+  const showCorrelation = view === "correlation";
   dashboardTab.classList.toggle("active", showDashboard);
-  statisticsTab.classList.toggle("active", !showDashboard);
+  statisticsTab.classList.toggle("active", showStatistics);
+  correlationTab.classList.toggle("active", showCorrelation);
   dashboardPanel.classList.toggle("hidden", !showDashboard);
-  statisticsPanel.classList.toggle("hidden", showDashboard);
+  statisticsPanel.classList.toggle("hidden", !showStatistics);
+  correlationPanel.classList.toggle("hidden", !showCorrelation);
+  if (showCorrelation) {
+    renderCorrelationView();
+    setTimeout(() => resizeCorrelationPlots(), 0);
+    setTimeout(() => {
+      if (correlationMode === "pair") {
+        renderCorrelationPairExplorer();
+      } else {
+        renderCorrelationMatrixExplorer();
+      }
+    }, 60);
+  }
 }
 
 function normalizeValue(value) {
@@ -574,6 +1242,24 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
+function escapeHtmlAttribute(value) {
+  return escapeHtml(String(value))
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderStatsHeaderCell(label) {
+  const safeLabel = escapeHtml(String(label));
+  const description = STAT_TERM_EXPLANATIONS[label];
+  if (!description) {
+    return `<th>${safeLabel}</th>`;
+  }
+
+  const safeDescription = escapeHtmlAttribute(description);
+  const safeAriaLabel = escapeHtmlAttribute(`Info about ${label}`);
+  return `<th><span class="stats-term-header">${safeLabel}<button type="button" class="stats-term-info" aria-label="${safeAriaLabel}" data-tooltip="${safeDescription}">i</button></span></th>`;
+}
+
 function buildDashboardHtml(payload) {
   const payloadJson = JSON.stringify(payload).replaceAll("</script>", "<\\/script>");
   return `<!DOCTYPE html>
@@ -581,7 +1267,10 @@ function buildDashboardHtml(payload) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(payload.title)}</title>
+  <title>${escapeHtml(APP_TITLE)} | ${escapeHtml(payload.title)}</title>
+  <link rel="icon" type="image/png" href="/favicon.png" />
+  <link rel="shortcut icon" href="/favicon.png" />
+  <link rel="apple-touch-icon" href="/favicon.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -1349,18 +2038,23 @@ clearButton.addEventListener("click", () => {
   if (emptyStateCopy) emptyStateCopy.textContent = "Drop in a CSV file and the interactive 3D view will appear here.";
   currentPayload = null;
   selectedStatsColumns = [];
+  selectedMatrixColumns = [];
+  focusedMatrixPair = null;
+  correlationMode = "pair";
   renderStatsToolbar();
   renderStatsTable();
   renderCategoricalSummary();
+  renderCorrelationView();
   setOuterView("dashboard");
   setSelectedFile(null);
   clearMeta();
   clearError();
 });
 
-if (dashboardTab && statisticsTab) {
+if (dashboardTab && statisticsTab && correlationTab) {
   dashboardTab.addEventListener("click", () => setOuterView("dashboard"));
   statisticsTab.addEventListener("click", () => setOuterView("statistics"));
+  correlationTab.addEventListener("click", () => setOuterView("correlation"));
 }
 if (statsNumericDownloadButton) {
   statsNumericDownloadButton.addEventListener("click", downloadNumericStatsCsv);
@@ -1368,10 +2062,79 @@ if (statsNumericDownloadButton) {
 if (statsCategoricalDownloadButton) {
   statsCategoricalDownloadButton.addEventListener("click", downloadCategoricalSummaryCsv);
 }
+if (corrPairModeButton) {
+  corrPairModeButton.addEventListener("click", () => setCorrelationMode("pair"));
+}
+if (corrMatrixModeButton) {
+  corrMatrixModeButton.addEventListener("click", () => setCorrelationMode("matrix"));
+}
+if (corrXSelect) {
+  corrXSelect.addEventListener("change", renderCorrelationPairExplorer);
+}
+if (corrYSelect) {
+  corrYSelect.addEventListener("change", renderCorrelationPairExplorer);
+}
+if (corrAlphaSlider) {
+  const onAlphaChange = () => {
+    updateCorrelationAlphaLabel();
+    rerenderCorrelationScatterViews();
+  };
+  corrAlphaSlider.addEventListener("input", onAlphaChange);
+  corrAlphaSlider.addEventListener("change", onAlphaChange);
+}
+if (corrMatrixMethod) {
+  corrMatrixMethod.addEventListener("change", () => {
+    focusedMatrixPair = null;
+    renderCorrelationMatrixExplorer();
+  });
+}
+if (corrSelectAllButton) {
+  corrSelectAllButton.addEventListener("click", () => {
+    if (!currentPayload) return;
+    selectedMatrixColumns = [...currentPayload.numeric_columns];
+    focusedMatrixPair = null;
+    renderCorrelationMatrixExplorer();
+  });
+}
+if (corrClearAllButton) {
+  corrClearAllButton.addEventListener("click", () => {
+    selectedMatrixColumns = [];
+    focusedMatrixPair = null;
+    renderCorrelationMatrixExplorer();
+  });
+}
+if (corrPairResetButton) {
+  corrPairResetButton.addEventListener("click", () => reset2DPlotZoom("corr-pair-plot"));
+}
+if (corrFocusResetButton) {
+  corrFocusResetButton.addEventListener("click", () => reset2DPlotZoom("corr-focus-plot"));
+}
+if (corrPairSaveButton) {
+  corrPairSaveButton.addEventListener("click", () => {
+    const x = safeFilenamePart(corrXSelect?.value || "x");
+    const y = safeFilenamePart(corrYSelect?.value || "y");
+    download2DPlotImage("corr-pair-plot", `${safeDatasetStem()}_pair_${x}_vs_${y}`);
+  });
+}
+if (corrFocusSaveButton) {
+  corrFocusSaveButton.addEventListener("click", () => {
+    const x = safeFilenamePart(focusedMatrixPair?.xColumn || "x");
+    const y = safeFilenamePart(focusedMatrixPair?.yColumn || "y");
+    download2DPlotImage("corr-focus-plot", `${safeDatasetStem()}_focused_${x}_vs_${y}`);
+  });
+}
 window.addEventListener("resize", () => {
   if (!currentPayload) return;
   const categoricalColumns = categoricalColumnsForPayload(currentPayload);
   updateCategoricalSheetHeight(categoricalColumns.length);
+  if (hasPlotly()) {
+    ["corr-pair-plot", "corr-matrix-heatmap", "corr-focus-plot"].forEach((id) => {
+      const node = document.getElementById(id);
+      if (node && node.data) {
+        Plotly.Plots.resize(node);
+      }
+    });
+  }
 });
 
 form.addEventListener("submit", async (event) => {
@@ -1398,6 +2161,9 @@ form.addEventListener("submit", async (event) => {
     const payload = buildPayload(rows, title);
     currentPayload = payload;
     selectedStatsColumns = payload.numeric_columns.slice(0, Math.min(4, payload.numeric_columns.length));
+    selectedMatrixColumns = payload.numeric_columns.slice(0, Math.min(8, payload.numeric_columns.length));
+    focusedMatrixPair = null;
+    correlationMode = "pair";
     frame.srcdoc = buildDashboardHtml(payload);
     setViewerContext(payload.title);
     emptyState.classList.add("hidden");
@@ -1407,6 +2173,7 @@ form.addEventListener("submit", async (event) => {
     renderStatsToolbar();
     renderStatsTable();
     renderCategoricalSummary();
+    renderCorrelationView();
     setOuterView("dashboard");
     showMeta(`${payload.records.length.toLocaleString()} rows across ${payload.columns.length.toLocaleString()} columns loaded.`);
   } catch (err) {
@@ -1423,3 +2190,5 @@ form.addEventListener("submit", async (event) => {
 
 renderStatsTable();
 renderCategoricalSummary();
+updateCorrelationAlphaLabel();
+renderCorrelationView();
