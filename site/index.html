@@ -207,24 +207,61 @@
     .viewer-header {
       display: flex;
       justify-content: space-between;
-      gap: 12px;
+      gap: 14px;
       align-items: center;
       padding: 10px 12px 2px;
     }
-    .viewer-title {
-      font-size: 1rem;
-      font-weight: 700;
-      letter-spacing: -0.02em;
+    .viewer-tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      max-width: 520px;
+      padding: 7px;
+      border-radius: 999px;
+      background: rgba(174, 92, 255, 0.1);
+      border: 1px solid rgba(174, 92, 255, 0.22);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
     }
-    .viewer-note {
-      color: var(--muted);
-      font-size: 0.84rem;
+    .viewer-tab {
+      flex: 1;
+      text-align: center;
+      padding: 12px 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      background: rgba(255, 255, 255, 0.02);
+      color: #d5d8e1;
+      font-size: 0.8rem;
+      font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.12em;
+    }
+    .viewer-tab.active {
+      background: linear-gradient(135deg, rgba(174, 92, 255, 0.88), rgba(141, 52, 234, 0.92));
+      color: #fff;
+      border-color: rgba(174, 92, 255, 0.54);
+      box-shadow: 0 10px 24px rgba(174, 92, 255, 0.24);
+    }
+    .viewer-context {
+      color: var(--muted);
+      font-size: 0.84rem;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      text-align: right;
     }
     .viewer-stage {
       position: relative;
       min-height: 0;
+    }
+    .viewer-panel {
+      height: 100%;
+      min-height: 0;
+    }
+    .viewer-panel.hidden {
+      display: none;
     }
     iframe {
       width: 100%;
@@ -232,6 +269,162 @@
       border: 1px solid rgba(86, 74, 104, 0.42);
       border-radius: 22px;
       background: #fff;
+    }
+    .stats-stage {
+      height: 100%;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: auto;
+      padding-right: 2px;
+    }
+    .stats-section-title {
+      padding: 0 12px;
+      color: var(--accent);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .stats-toolbar-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 10px;
+    }
+    .stats-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      flex: 1;
+      min-width: 0;
+    }
+    .stats-download-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      align-items: stretch;
+    }
+    .stats-column-toggle {
+      padding: 9px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(86, 74, 104, 0.32);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--ink);
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+    .stats-column-toggle.active {
+      background: rgba(174, 92, 255, 0.14);
+      border-color: rgba(174, 92, 255, 0.28);
+      color: #f2e8ff;
+    }
+    .stats-download {
+      padding: 9px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(174, 92, 255, 0.34);
+      background: rgba(174, 92, 255, 0.14);
+      color: #f4e8ff;
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      box-shadow: none;
+    }
+    .stats-download:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.12);
+      color: #b0b5c3;
+    }
+    .stats-download:hover:disabled {
+      transform: none;
+    }
+    .stats-copy {
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+      padding: 0 12px;
+    }
+    .stats-sheet {
+      min-height: 0;
+      overflow: auto;
+      background: rgba(18, 20, 28, 0.92);
+      border: 1px solid rgba(110, 96, 136, 0.42);
+      border-radius: 22px;
+      padding: 14px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.015);
+    }
+    .stats-sheet.numeric {
+      flex: 0 0 auto;
+      max-height: 44vh;
+    }
+    .stats-sheet.categorical {
+      flex: 0 0 auto;
+      min-height: 0;
+      max-height: none;
+    }
+    .stats-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 720px;
+      color: #e8ebf4;
+    }
+    .stats-table th,
+    .stats-table td {
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 12px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .stats-table thead th {
+      position: sticky;
+      top: 0;
+      background: rgba(18, 20, 28, 0.98);
+      z-index: 1;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #abb4c5;
+    }
+    .stats-table tbody tr:hover td,
+    .stats-table tbody tr:hover th {
+      background: rgba(174, 92, 255, 0.06);
+    }
+    .stats-table tbody th {
+      width: 180px;
+      font-size: 0.82rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #b9c1d2;
+      background: rgba(26, 28, 37, 0.94);
+    }
+    .stats-table tbody th.stats-parameter {
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 0.9rem;
+      color: #e8ebf4;
+      background: rgba(30, 33, 43, 0.94);
+    }
+    .stats-table td {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.95rem;
+    }
+    .stats-empty {
+      display: grid;
+      place-items: center;
+      min-height: 220px;
+      text-align: center;
+      color: #a8b0c0;
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }
+    .stats-empty.small {
+      min-height: 140px;
     }
     .empty-state {
       position: absolute;
@@ -284,9 +477,32 @@
         height: auto;
         min-height: 65vh;
       }
+      .viewer-header {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .viewer-tabs {
+        max-width: none;
+      }
       iframe {
         min-height: 65vh;
         height: 65vh;
+      }
+      .stats-sheet.numeric {
+        min-height: 65vh;
+      }
+      .stats-sheet.categorical {
+        min-height: 0;
+      }
+      .stats-toolbar-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .stats-download-group {
+        width: 100%;
+      }
+      .stats-download {
+        width: 100%;
       }
       .dropzone {
         grid-template-columns: 1fr;
@@ -326,8 +542,11 @@
 
     <section class="viewer">
       <div class="viewer-header">
-        <div class="viewer-title" id="viewer-title">No dashboard loaded yet</div>
-        <div class="viewer-note">Interactive dashboard</div>
+        <div class="viewer-tabs">
+          <button class="viewer-tab active" id="dashboard-tab" type="button">3D Dashboard</button>
+          <button class="viewer-tab" id="statistics-tab" type="button">Statistics</button>
+        </div>
+        <div class="viewer-context" id="viewer-context">No dashboard loaded yet</div>
       </div>
       <div class="viewer-stage">
         <div class="empty-state" id="empty-state">
@@ -337,12 +556,30 @@
             <p class="empty-state-copy">Drop in a CSV file and the interactive 3D view will appear here.</p>
           </div>
         </div>
-        <iframe id="dashboard-frame" title="Dashboard preview"></iframe>
+        <div class="viewer-panel" id="dashboard-panel">
+          <iframe id="dashboard-frame" title="Dashboard preview"></iframe>
+        </div>
+        <div class="viewer-panel hidden" id="statistics-panel">
+          <div class="stats-stage">
+            <div class="stats-section-title">Numeric Parameters</div>
+            <div class="stats-toolbar-row">
+              <div class="stats-toolbar" id="stats-toolbar"></div>
+              <div class="stats-download-group">
+                <button class="stats-download" id="stats-download-numeric-button" type="button">Download Numeric CSV</button>
+                <button class="stats-download" id="stats-download-categorical-button" type="button">Download Categorical CSV</button>
+              </div>
+            </div>
+            <div class="stats-copy">Toggle parameters to add or remove them from the descriptive statistics sheet.</div>
+            <div class="stats-sheet numeric" id="stats-sheet"></div>
+            <div class="stats-section-title">Categorical Summary</div>
+            <div class="stats-sheet categorical" id="category-sheet"></div>
+          </div>
+        </div>
       </div>
     </section>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="./assets/app.js"></script>
+  <script src="./assets/app.js?v=20260422-6"></script>
 </body>
 </html>
