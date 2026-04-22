@@ -13,6 +13,8 @@ const error = document.getElementById("error");
 const viewerContext = document.getElementById("viewer-context") || document.getElementById("viewer-title");
 const clearButton = document.getElementById("clear-button");
 const emptyState = document.getElementById("empty-state");
+const loadingState = document.getElementById("loading-state");
+const loadingTitle = document.getElementById("loading-title");
 const dashboardTab = document.getElementById("dashboard-tab");
 const statisticsTab = document.getElementById("statistics-tab");
 const dashboardPanel = document.getElementById("dashboard-panel");
@@ -31,6 +33,14 @@ let selectedStatsColumns = [];
 function setViewerContext(text) {
   if (viewerContext) {
     viewerContext.textContent = text;
+  }
+}
+
+function setLoading(isLoading, title = "Loading dashboard...") {
+  if (!loadingState) return;
+  loadingState.classList.toggle("hidden", !isLoading);
+  if (isLoading && loadingTitle && title) {
+    loadingTitle.textContent = title;
   }
 }
 
@@ -1329,6 +1339,7 @@ fileInput.addEventListener("change", () => {
 });
 
 clearButton.addEventListener("click", () => {
+  setLoading(false);
   form.reset();
   frame.srcdoc = "";
   setViewerContext("No dashboard loaded yet");
@@ -1377,6 +1388,7 @@ form.addEventListener("submit", async (event) => {
     return;
   }
 
+  setLoading(true, "Loading dashboard...");
   setViewerContext("Building dashboard...");
 
   try {
@@ -1404,6 +1416,8 @@ form.addEventListener("submit", async (event) => {
     if (emptyStateTitle) emptyStateTitle.textContent = "Could not build dashboard from this CSV.";
     if (emptyStateCopy) emptyStateCopy.textContent = err.message || "Upload failed.";
     showError(err.message || "Upload failed.");
+  } finally {
+    setLoading(false);
   }
 });
 
