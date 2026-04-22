@@ -24,9 +24,11 @@ const loadingState = document.getElementById("loading-state");
 const loadingTitle = document.getElementById("loading-title");
 const dashboardTab = document.getElementById("dashboard-tab");
 const statisticsTab = document.getElementById("statistics-tab");
+const distributionTab = document.getElementById("distribution-tab");
 const correlationTab = document.getElementById("correlation-tab");
 const dashboardPanel = document.getElementById("dashboard-panel");
 const statisticsPanel = document.getElementById("statistics-panel");
+const distributionPanel = document.getElementById("distribution-panel");
 const correlationPanel = document.getElementById("correlation-panel");
 const statsNumericSelector = document.getElementById("stats-numeric-selector");
 const statsCategoricalSelector = document.getElementById("stats-categorical-selector");
@@ -42,6 +44,23 @@ const statsSelectVisibleCategoricalButton = document.getElementById("stats-selec
 const statsClearCategoricalButton = document.getElementById("stats-clear-categorical-button");
 const statsSheet = document.getElementById("stats-sheet");
 const categorySheet = document.getElementById("category-sheet");
+const distVariableSelect = document.getElementById("dist-variable-select");
+const distSplitSelect = document.getElementById("dist-split-select");
+const distViewSelect = document.getElementById("dist-view-select");
+const distOverlaySelect = document.getElementById("dist-overlay-select");
+const distNormalizationSelect = document.getElementById("dist-normalization-select");
+const distBinControl = document.getElementById("dist-bin-control");
+const distBinSlider = document.getElementById("dist-bin-slider");
+const distBinValue = document.getElementById("dist-bin-value");
+const distNote = document.getElementById("dist-note");
+const distSummaryMetrics = document.getElementById("dist-summary-metrics");
+const distResetButton = document.getElementById("dist-reset-button");
+const distSaveButton = document.getElementById("dist-save-button");
+const distBoxSaveButton = document.getElementById("dist-box-save-button");
+const distViolinSaveButton = document.getElementById("dist-violin-save-button");
+const distPlot = document.getElementById("dist-plot");
+const distBoxPlot = document.getElementById("dist-box-plot");
+const distViolinPlot = document.getElementById("dist-violin-plot");
 const corrPairModeButton = document.getElementById("corr-pair-mode-button");
 const corrMatrixModeButton = document.getElementById("corr-matrix-mode-button");
 const corrPairPanel = document.getElementById("corr-pair-panel");
@@ -76,6 +95,12 @@ let selectedCategoricalStatsColumns = [];
 let statsNumericSearchValue = "";
 let statsCategoricalSearchValue = "";
 let activeOuterView = "dashboard";
+let distributionColumn = null;
+let distributionSplitColumn = NONE_OPTION;
+let distributionViewMode = "histogram";
+let distributionOverlayMode = "kde";
+let distributionBinCount = 24;
+let distributionNormalization = "density";
 let correlationMode = "pair";
 let selectedMatrixColumns = [];
 let focusedMatrixPair = null;
@@ -125,6 +150,16 @@ const CORRELATION_METRIC_EXPLANATIONS = {
   "Curve": "Shows which trendline is currently drawn on the scatter plot. Linear is a straight line; non-linear selects the better quadratic or cubic fit.",
   "Fit R²": "Indicates how much variance in Y is explained by the displayed trendline. Closer to 1 means the fitted curve tracks the data more closely.",
 };
+const DISTRIBUTION_METRIC_EXPLANATIONS = {
+  "Rows Used": "Rows with a usable numeric value for the selected variable after filtering.",
+  "Missing": "Rows where the selected numeric value is missing or non-numeric.",
+  "Mean": "Arithmetic average of the included values.",
+  "Median": "Middle value after sorting the included values.",
+  "IQR": "Interquartile range, calculated as Q3 minus Q1. It captures the middle 50% spread.",
+  "Std Dev": "Standard deviation of the included values.",
+};
+const DISTRIBUTION_SINGLE_COLOR = "#ae5cff";
+const DISTRIBUTION_GROUP_COLORS = ["#ae5cff", "#38bdf8", "#f59e0b", "#34d399", "#fb7185", "#facc15", "#22d3ee", "#c084fc"];
 
 function setViewerContext(text) {
   if (viewerContext) {
@@ -179,8 +214,15 @@ async function loadSelectedCsv() {
     selectedCategoricalStatsColumns = categoricalColumnsForPayload(payload).slice(0, Math.min(6, categoricalColumnsForPayload(payload).length));
     statsNumericSearchValue = "";
     statsCategoricalSearchValue = "";
+    distributionColumn = payload.numeric_columns[0] || null;
+    distributionSplitColumn = NONE_OPTION;
+    distributionViewMode = "histogram";
+    distributionOverlayMode = "kde";
+    distributionBinCount = 24;
+    distributionNormalization = "density";
     if (statsNumericSearch) statsNumericSearch.value = "";
     if (statsCategoricalSearch) statsCategoricalSearch.value = "";
+    if (distBinSlider) distBinSlider.value = String(distributionBinCount);
     selectedMatrixColumns = payload.numeric_columns.slice(0, Math.min(8, payload.numeric_columns.length));
     focusedMatrixPair = null;
     correlationMode = "pair";
@@ -462,6 +504,12 @@ function refreshActivePayload() {
     categoricalColumnsForPayload(currentPayload),
     selectedCategoricalStatsColumns,
   );
+  if (!currentPayload.numeric_columns.includes(distributionColumn)) {
+    distributionColumn = currentPayload.numeric_columns[0] || null;
+  }
+  if (!distributionSplitColumnsForPayload(currentPayload).includes(distributionSplitColumn)) {
+    distributionSplitColumn = NONE_OPTION;
+  }
   selectedMatrixColumns = selectedMatrixColumns.filter((column) => currentPayload.numeric_columns.includes(column));
   if (selectedMatrixColumns.length < 2) {
     selectedMatrixColumns = currentPayload.numeric_columns.slice(0, Math.min(8, currentPayload.numeric_columns.length));
@@ -469,6 +517,7 @@ function refreshActivePayload() {
   renderStatsToolbar();
   renderStatsTable();
   renderCategoricalSummary();
+  renderDistributionView();
   renderCorrelationView();
   refreshMetaMessage();
 }
@@ -1109,6 +1158,209 @@ function renderCategoricalSummary() {
   html += "</tbody></table>";
   categorySheet.innerHTML = html;
   updateCategoricalSheetHeight(selectedColumns.length);
+}
+
+function distributionSplitColumnsForPayload(payload) {
+  if (!payload) return [];
+  const numericSet = new Set(payload.numeric_columns);
+  return payload.color_columns.filter((column) => {
+    if (numericSet.has(column)) return false;
+    const uniqueValues = new Set();
+    payload.records.forEach((row) => {
+      const value = normalizeValue(row[column]);
+      if (value !== null) uniqueValues.add(String(value));
+    });
+    return uniqueValues.size >= 2 && uniqueValues.size <= 12;
+  });
+}
+
+function syncDistributionState() {
+  if (!currentPayload) {
+    distributionColumn = null;
+    distributionSplitColumn = NONE_OPTION;
+    distributionOverlayMode = "kde";
+    return;
+  }
+  const numericColumns = currentPayload.numeric_columns;
+  if (!numericColumns.includes(distributionColumn)) {
+    distributionColumn = numericColumns[0] || null;
+  }
+  const splitColumns = distributionSplitColumnsForPayload(currentPayload);
+  if (distributionSplitColumn !== NONE_OPTION && !splitColumns.includes(distributionSplitColumn)) {
+    distributionSplitColumn = NONE_OPTION;
+  }
+  const overlayOptions = distributionOverlayOptionsForMode(distributionViewMode);
+  if (!overlayOptions.some((option) => option.value === distributionOverlayMode)) {
+    distributionOverlayMode = overlayOptions[0]?.value || "none";
+  }
+}
+
+function distributionOverlayOptionsForMode(mode) {
+  if (mode === "histogram") {
+    return [
+      { value: "kde", label: "KDE Curve" },
+      { value: "none", label: "None" },
+    ];
+  }
+  if (mode === "kde") {
+    return [
+      { value: "cdf", label: "CDF Line" },
+      { value: "none", label: "None" },
+    ];
+  }
+  if (mode === "cdf") {
+    return [
+      { value: "kde", label: "KDE Curve" },
+      { value: "none", label: "None" },
+    ];
+  }
+  return [{ value: "none", label: "None" }];
+}
+
+function distributionOverlayNote(mode, overlayMode) {
+  if (mode === "histogram" && overlayMode === "kde") {
+    return "Histogram + KDE is shown on a shared density axis so you can compare raw shape and smooth trend together.";
+  }
+  if (mode === "kde" && overlayMode === "cdf") {
+    return "KDE stays on the left axis while the cumulative distribution is overlaid on the right axis for percentile reading.";
+  }
+  if (mode === "cdf" && overlayMode === "kde") {
+    return "CDF stays on the left axis while the smooth KDE overlay is shown on the right axis for shape context.";
+  }
+  if (mode === "box") {
+    return "Box plots emphasize median, quartiles, and outliers. Use Split By to compare cohorts side by side.";
+  }
+  if (mode === "violin") {
+    return "Violin plots emphasize density shape and spread. Use Split By to compare cohorts side by side.";
+  }
+  return "Use Split By to compare cohorts when a low-cardinality categorical column is available.";
+}
+
+function distributionSeriesForSelection(payload, valueColumn, splitColumn = NONE_OPTION) {
+  if (!payload || !valueColumn) return [];
+  if (!splitColumn || splitColumn === NONE_OPTION) {
+    const values = payload.records.map((row) => toFiniteNumber(row[valueColumn])).filter((value) => value !== null);
+    return values.length ? [{ name: valueColumn, values }] : [];
+  }
+
+  const grouped = new Map();
+  payload.records.forEach((row) => {
+    const numeric = toFiniteNumber(row[valueColumn]);
+    const groupValue = normalizeValue(row[splitColumn]);
+    if (numeric === null || groupValue === null) return;
+    const key = String(groupValue);
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(numeric);
+  });
+
+  return [...grouped.entries()]
+    .sort((left, right) => left[0].localeCompare(right[0], undefined, { numeric: true, sensitivity: "base" }))
+    .map(([name, values]) => ({ name, values }));
+}
+
+function flattenDistributionValues(series) {
+  return series.flatMap((item) => item.values);
+}
+
+function normalDensity(z) {
+  return Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+}
+
+function kdeBandwidth(values) {
+  if (values.length < 2) return 1;
+  const std = standardDeviation(values) || 0;
+  const q1 = quantileValue(values, 0.25);
+  const q3 = quantileValue(values, 0.75);
+  const iqr = (q3 !== null && q1 !== null) ? Math.max(0, q3 - q1) : 0;
+  const robustScale = iqr > 0 ? iqr / 1.34 : std;
+  const sigma = Math.max(std, 1e-9);
+  const scale = robustScale > 0 ? Math.min(sigma, robustScale) : sigma;
+  const bandwidth = 0.9 * scale * Math.pow(values.length, -0.2);
+  if (Number.isFinite(bandwidth) && bandwidth > 0) return bandwidth;
+  const range = Math.max(...values) - Math.min(...values);
+  return range > 0 ? range / 20 : 1;
+}
+
+function numericExtent(values) {
+  if (!values.length) return null;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (min === max) {
+    const padding = Math.abs(min || 1) * 0.1 || 1;
+    return { min: min - padding, max: max + padding };
+  }
+  return { min, max };
+}
+
+function sampledGrid(extent, points = 160) {
+  const safePoints = Math.max(40, points);
+  const step = (extent.max - extent.min) / (safePoints - 1);
+  return Array.from({ length: safePoints }, (_, index) => extent.min + (step * index));
+}
+
+function kdeCurve(values, grid) {
+  if (!values.length) return { x: [], y: [] };
+  const bandwidth = kdeBandwidth(values);
+  const y = grid.map((point) => {
+    let total = 0;
+    values.forEach((value) => {
+      total += normalDensity((point - value) / bandwidth);
+    });
+    return total / (values.length * bandwidth);
+  });
+  return { x: grid, y };
+}
+
+function empiricalCdf(values) {
+  const sorted = [...values].sort((left, right) => left - right);
+  return {
+    x: sorted,
+    y: sorted.map((_, index) => (index + 1) / sorted.length),
+  };
+}
+
+function renderDistributionSummary(values, totalRows) {
+  if (!distSummaryMetrics) return;
+  if (!values.length) {
+    distSummaryMetrics.innerHTML = "";
+    return;
+  }
+  const metrics = [
+    { label: "Rows Used", value: values.length.toLocaleString() },
+    { label: "Missing", value: Math.max(0, totalRows - values.length).toLocaleString() },
+    { label: "Mean", value: formatStatValue(meanValue(values)) },
+    { label: "Median", value: formatStatValue(medianValue(values)) },
+    { label: "IQR", value: formatStatValue((quantileValue(values, 0.75) ?? 0) - (quantileValue(values, 0.25) ?? 0)) },
+    { label: "Std Dev", value: formatStatValue(standardDeviation(values)) },
+  ];
+  distSummaryMetrics.innerHTML = metrics.map((item) => `
+      <div class="corr-metric-card">
+        <div class="corr-metric-label">${renderInfoTooltipLabel(item.label, DISTRIBUTION_METRIC_EXPLANATIONS[item.label], "corr-metric-label-text")}</div>
+        <div class="corr-metric-value">${escapeHtml(String(item.value))}</div>
+      </div>
+    `).join("");
+}
+
+function distributionLegendName(item, valueColumn, splitColumn) {
+  return splitColumn && splitColumn !== NONE_OPTION ? `${splitColumn}: ${item.name}` : valueColumn;
+}
+
+function distributionColor(index, splitColumn) {
+  if (!splitColumn || splitColumn === NONE_OPTION) return DISTRIBUTION_SINGLE_COLOR;
+  return DISTRIBUTION_GROUP_COLORS[index % DISTRIBUTION_GROUP_COLORS.length];
+}
+
+function renderDistributionEmpty(message) {
+  if (distPlot) {
+    distPlot.innerHTML = `<div class="corr-empty">${escapeHtml(String(message))}</div>`;
+  }
+  if (distBoxPlot) {
+    distBoxPlot.innerHTML = '<div class="corr-empty">Choose a numeric variable to show the box plot.</div>';
+  }
+  if (distViolinPlot) {
+    distViolinPlot.innerHTML = '<div class="corr-empty">Choose a numeric variable to show the violin plot.</div>';
+  }
+  if (distSummaryMetrics) distSummaryMetrics.innerHTML = "";
 }
 
 function populateSimpleSelect(select, options, selectedValue) {
@@ -1882,18 +2134,396 @@ function renderCorrelationView() {
   setCorrelationMode(correlationMode);
 }
 
+function updateDistributionBinLabel() {
+  if (distBinValue) {
+    distBinValue.textContent = String(distributionBinCount);
+  }
+}
+
+function resizeDistributionPlot() {
+  if (!hasPlotly()) return;
+  [distPlot, distBoxPlot, distViolinPlot].forEach((node) => {
+    if (node && node.data) Plotly.Plots.resize(node);
+  });
+}
+
+function renderSingleDistributionPlot(targetId, traces, layout, emptyMessage) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  if (!traces.length) {
+    target.innerHTML = `<div class="corr-empty">${escapeHtml(String(emptyMessage))}</div>`;
+    return;
+  }
+  if (!hasPlotly()) {
+    target.innerHTML = '<div class="corr-empty">Plotly is not loaded, so distribution charts are unavailable.</div>';
+    return;
+  }
+  target.innerHTML = "";
+  const renderPromise = Plotly.newPlot(targetId, traces, layout, {
+    responsive: true,
+    displaylogo: false,
+    modeBarButtonsToRemove: ["lasso2d", "select2d"],
+  });
+  if (renderPromise && typeof renderPromise.then === "function") {
+    renderPromise.then(() => resizeDistributionPlot()).catch(() => {
+      target.innerHTML = `<div class="corr-empty">${escapeHtml(String(emptyMessage))}</div>`;
+    });
+  }
+}
+
+function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode, overlayMode) {
+  if (!distPlot) return;
+  const allValues = flattenDistributionValues(series);
+  if (!allValues.length) {
+    renderDistributionEmpty("No numeric rows remain after filtering for this variable.");
+    return;
+  }
+  if (!hasPlotly()) {
+    renderDistributionEmpty("Plotly is not loaded, so distribution charts are unavailable.");
+    return;
+  }
+
+  const extent = numericExtent(allValues);
+  const grid = extent ? sampledGrid(extent) : [];
+  const traces = [];
+  let yAxisTitle = "Value";
+  let yAxis2 = null;
+  let barmode = "overlay";
+
+  series.forEach((item, index) => {
+    const color = distributionColor(index, splitColumn);
+    const name = distributionLegendName(item, valueColumn, splitColumn);
+    if (mode === "histogram") {
+      traces.push({
+        type: "histogram",
+        x: item.values,
+        name,
+        marker: { color, line: { width: 0 } },
+        opacity: splitColumn && splitColumn !== NONE_OPTION ? 0.58 : 0.82,
+        nbinsx: distributionBinCount,
+        histnorm: overlayMode === "kde"
+          ? "probability density"
+          : (distributionNormalization === "count" ? "" : (distributionNormalization === "density" ? "probability density" : "probability")),
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{x}<br>${overlayMode === "kde" || distributionNormalization === "density" ? "Density" : distributionNormalization === "probability" ? "Probability" : "Count"}: %{y}<extra></extra>`,
+      });
+      if (overlayMode === "kde") {
+        const curve = kdeCurve(item.values, grid);
+        traces.push({
+          type: "scatter",
+          mode: "lines",
+          x: curve.x,
+          y: curve.y,
+          name: `${name} KDE`,
+          line: { color, width: 2.5 },
+          hovertemplate: `${escapeHtml(name)} KDE<br>${escapeHtml(valueColumn)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
+        });
+      }
+      yAxisTitle = overlayMode === "kde"
+        ? "Density"
+        : (distributionNormalization === "count" ? "Count" : distributionNormalization === "probability" ? "Probability" : "Density");
+      return;
+    }
+
+    if (mode === "kde") {
+      const curve = kdeCurve(item.values, grid);
+      traces.push({
+        type: "scatter",
+        mode: "lines",
+        x: curve.x,
+        y: curve.y,
+        name,
+        line: { color, width: 2.5 },
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
+      });
+      yAxisTitle = "Density";
+      if (overlayMode === "cdf") {
+        const cdf = empiricalCdf(item.values);
+        traces.push({
+          type: "scatter",
+          mode: "lines",
+          x: cdf.x,
+          y: cdf.y,
+          name: `${name} CDF`,
+          line: { color, width: 1.8, dash: "dot" },
+          yaxis: "y2",
+          hovertemplate: `${escapeHtml(name)} CDF<br>${escapeHtml(valueColumn)}: %{x}<br>Cumulative: %{y:.3f}<extra></extra>`,
+        });
+        yAxis2 = { title: "Cumulative Probability", overlaying: "y", side: "right", rangemode: "tozero", tickformat: ".0%" };
+      }
+      return;
+    }
+
+    if (mode === "cdf") {
+      const cdf = empiricalCdf(item.values);
+      traces.push({
+        type: "scatter",
+        mode: "lines",
+        x: cdf.x,
+        y: cdf.y,
+        name,
+        line: { color, width: 2.5, shape: "hv" },
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{x}<br>Cumulative: %{y:.3f}<extra></extra>`,
+      });
+      yAxisTitle = "Cumulative Probability";
+      if (overlayMode === "kde") {
+        const curve = kdeCurve(item.values, grid);
+        traces.push({
+          type: "scatter",
+          mode: "lines",
+          x: curve.x,
+          y: curve.y,
+          name: `${name} KDE`,
+          line: { color, width: 1.8, dash: "dot" },
+          yaxis: "y2",
+          hovertemplate: `${escapeHtml(name)} KDE<br>${escapeHtml(valueColumn)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
+        });
+        yAxis2 = { title: "Density", overlaying: "y", side: "right", rangemode: "tozero" };
+      }
+      return;
+    }
+
+    if (mode === "box") {
+      traces.push({
+        type: "box",
+        name,
+        y: item.values,
+        marker: { color },
+        line: { color },
+        boxpoints: splitColumn && splitColumn !== NONE_OPTION ? false : "outliers",
+        jitter: splitColumn && splitColumn !== NONE_OPTION ? 0 : 0.3,
+        pointpos: 0,
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{y}<extra></extra>`,
+      });
+      yAxisTitle = valueColumn;
+      barmode = "group";
+      return;
+    }
+
+    if (mode === "violin") {
+      traces.push({
+        type: "violin",
+        name,
+        y: item.values,
+        line: { color },
+        fillcolor: color,
+        opacity: 0.7,
+        box: { visible: true },
+        meanline: { visible: true },
+        points: splitColumn && splitColumn !== NONE_OPTION ? false : "outliers",
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{y}<extra></extra>`,
+      });
+      yAxisTitle = valueColumn;
+      barmode = "group";
+    }
+  });
+
+  const layout = {
+    paper_bgcolor: "rgba(18, 20, 28, 0.92)",
+    plot_bgcolor: "#ffffff",
+    font: { family: '"Inter", "Segoe UI Variable", "Segoe UI", sans-serif', color: "#e8ebf4" },
+    margin: { l: 60, r: yAxis2 ? 60 : 28, t: 28, b: 60 },
+    barmode,
+    legend: {
+      orientation: "h",
+      yanchor: "bottom",
+      y: 1.02,
+      xanchor: "left",
+      x: 0,
+      bgcolor: "rgba(16, 18, 26, 0.84)",
+      bordercolor: "rgba(174, 92, 255, 0.28)",
+      borderwidth: 1,
+      font: { color: "#e8ebf4" },
+    },
+    xaxis: {
+      title: { text: mode === "box" || mode === "violin" ? (splitColumn && splitColumn !== NONE_OPTION ? splitColumn : "Distribution") : valueColumn, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
+      tickfont: { color: "#e8ebf4" },
+      gridcolor: "rgba(16, 33, 50, 0.16)",
+      zerolinecolor: "rgba(16, 33, 50, 0.2)",
+    },
+    yaxis: {
+      title: { text: yAxisTitle, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
+      tickfont: { color: "#e8ebf4" },
+      gridcolor: "rgba(16, 33, 50, 0.16)",
+      zerolinecolor: "rgba(16, 33, 50, 0.2)",
+      rangemode: "tozero",
+    },
+  };
+  if (yAxis2) {
+    layout.yaxis2 = {
+      ...yAxis2,
+      tickfont: { color: "#cbd5e1" },
+      title: typeof yAxis2.title === "string"
+        ? { text: yAxis2.title, font: { color: "#cbd5e1", size: 13 } }
+        : yAxis2.title,
+      gridcolor: "rgba(0,0,0,0)",
+      zerolinecolor: "rgba(0,0,0,0)",
+    };
+  }
+
+  renderSingleDistributionPlot(
+    "dist-plot",
+    traces,
+    layout,
+    "Could not render this distribution chart for the selected variable.",
+  );
+}
+
+function renderDistributionShapePlots(series, valueColumn, splitColumn) {
+  const commonLayout = {
+    paper_bgcolor: "rgba(18, 20, 28, 0.92)",
+    plot_bgcolor: "#ffffff",
+    font: { family: '"Inter", "Segoe UI Variable", "Segoe UI", sans-serif', color: "#e8ebf4" },
+    margin: { l: 56, r: 24, t: 26, b: 56 },
+    showlegend: false,
+    xaxis: {
+      title: {
+        text: splitColumn && splitColumn !== NONE_OPTION ? splitColumn : "Distribution",
+        font: { color: "#e8ebf4", size: 13 },
+        standoff: 10,
+      },
+      tickfont: { color: "#e8ebf4" },
+      gridcolor: "rgba(16, 33, 50, 0.16)",
+      zerolinecolor: "rgba(16, 33, 50, 0.2)",
+    },
+    yaxis: {
+      title: { text: valueColumn, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
+      tickfont: { color: "#e8ebf4" },
+      gridcolor: "rgba(16, 33, 50, 0.16)",
+      zerolinecolor: "rgba(16, 33, 50, 0.2)",
+    },
+  };
+
+  const boxTraces = [];
+  const violinTraces = [];
+  series.forEach((item, index) => {
+    const color = distributionColor(index, splitColumn);
+    const name = distributionLegendName(item, valueColumn, splitColumn);
+    boxTraces.push({
+      type: "box",
+      name,
+      y: item.values,
+      marker: { color },
+      line: { color },
+      boxpoints: splitColumn && splitColumn !== NONE_OPTION ? false : "outliers",
+      jitter: splitColumn && splitColumn !== NONE_OPTION ? 0 : 0.3,
+      pointpos: 0,
+      hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{y}<extra></extra>`,
+    });
+    violinTraces.push({
+      type: "violin",
+      name,
+      y: item.values,
+      line: { color },
+      fillcolor: color,
+      opacity: 0.72,
+      box: { visible: true },
+      meanline: { visible: true },
+      points: splitColumn && splitColumn !== NONE_OPTION ? false : "outliers",
+      hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{y}<extra></extra>`,
+    });
+  });
+
+  renderSingleDistributionPlot(
+    "dist-box-plot",
+    boxTraces,
+    commonLayout,
+    "Could not render the box plot for the selected variable.",
+  );
+  renderSingleDistributionPlot(
+    "dist-violin-plot",
+    violinTraces,
+    commonLayout,
+    "Could not render the violin plot for the selected variable.",
+  );
+}
+
+function renderDistributionView() {
+  updateDistributionBinLabel();
+  syncDistributionState();
+  if (!currentPayload) {
+    if (distNote) distNote.textContent = "Upload a CSV to start exploring distributions.";
+    renderDistributionEmpty("Upload a CSV to start exploring distributions.");
+    return;
+  }
+
+  const numericColumns = currentPayload.numeric_columns;
+  if (!numericColumns.length) {
+    renderDistributionEmpty("No numeric columns are available for distribution analysis.");
+    return;
+  }
+
+  const splitColumns = distributionSplitColumnsForPayload(currentPayload);
+  populateSimpleSelect(distVariableSelect, numericColumns, distributionColumn || numericColumns[0]);
+  distributionColumn = distVariableSelect?.value || numericColumns[0];
+
+  const splitOptions = [NONE_OPTION, ...splitColumns];
+  if (distSplitSelect) {
+    distSplitSelect.innerHTML = "";
+    splitOptions.forEach((value) => {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = value === NONE_OPTION ? "None" : value;
+      distSplitSelect.appendChild(option);
+    });
+    distSplitSelect.value = splitOptions.includes(distributionSplitColumn) ? distributionSplitColumn : NONE_OPTION;
+    distributionSplitColumn = distSplitSelect.value;
+  }
+
+  if (distViewSelect) distViewSelect.value = distributionViewMode;
+  if (distNormalizationSelect) {
+    distNormalizationSelect.value = distributionNormalization;
+    distNormalizationSelect.disabled = distributionViewMode !== "histogram";
+  }
+
+  const overlayOptions = distributionOverlayOptionsForMode(distributionViewMode);
+  if (distOverlaySelect) {
+    distOverlaySelect.innerHTML = "";
+    overlayOptions.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.value;
+      option.textContent = item.label;
+      distOverlaySelect.appendChild(option);
+    });
+    distOverlaySelect.value = overlayOptions.some((item) => item.value === distributionOverlayMode)
+      ? distributionOverlayMode
+      : overlayOptions[0].value;
+    distributionOverlayMode = distOverlaySelect.value;
+    distOverlaySelect.disabled = overlayOptions.length === 1;
+  }
+
+  if (distBinControl) {
+    distBinControl.classList.toggle("hidden", distributionViewMode !== "histogram");
+  }
+  if (distNote) {
+    distNote.textContent = distributionOverlayNote(distributionViewMode, distributionOverlayMode);
+  }
+
+  const series = distributionSeriesForSelection(currentPayload, distributionColumn, distributionSplitColumn);
+  const allValues = flattenDistributionValues(series);
+  renderDistributionSummary(allValues, currentPayload.records.length);
+  renderDistributionPlotForSeries(series, distributionColumn, distributionSplitColumn, distributionViewMode, distributionOverlayMode);
+  renderDistributionShapePlots(series, distributionColumn, distributionSplitColumn);
+}
+
 function setOuterView(view) {
   activeOuterView = view;
-  if (!dashboardTab || !statisticsTab || !correlationTab || !dashboardPanel || !statisticsPanel || !correlationPanel) return;
+  if (!dashboardTab || !statisticsTab || !distributionTab || !correlationTab || !dashboardPanel || !statisticsPanel || !distributionPanel || !correlationPanel) return;
   const showDashboard = view === "dashboard";
   const showStatistics = view === "statistics";
+  const showDistribution = view === "distribution";
   const showCorrelation = view === "correlation";
   dashboardTab.classList.toggle("active", showDashboard);
   statisticsTab.classList.toggle("active", showStatistics);
+  distributionTab.classList.toggle("active", showDistribution);
   correlationTab.classList.toggle("active", showCorrelation);
   dashboardPanel.classList.toggle("hidden", !showDashboard);
   statisticsPanel.classList.toggle("hidden", !showStatistics);
+  distributionPanel.classList.toggle("hidden", !showDistribution);
   correlationPanel.classList.toggle("hidden", !showCorrelation);
+  if (showDistribution) {
+    renderDistributionView();
+    setTimeout(() => resizeDistributionPlot(), 0);
+  }
   if (showCorrelation) {
     renderCorrelationView();
     setTimeout(() => resizeCorrelationPlots(), 0);
@@ -2883,8 +3513,15 @@ clearButton.addEventListener("click", () => {
   selectedCategoricalStatsColumns = [];
   statsNumericSearchValue = "";
   statsCategoricalSearchValue = "";
+  distributionColumn = null;
+  distributionSplitColumn = NONE_OPTION;
+  distributionViewMode = "histogram";
+  distributionOverlayMode = "kde";
+  distributionBinCount = 24;
+  distributionNormalization = "density";
   if (statsNumericSearch) statsNumericSearch.value = "";
   if (statsCategoricalSearch) statsCategoricalSearch.value = "";
+  if (distBinSlider) distBinSlider.value = String(distributionBinCount);
   selectedMatrixColumns = [];
   focusedMatrixPair = null;
   correlationMode = "pair";
@@ -2892,6 +3529,7 @@ clearButton.addEventListener("click", () => {
   renderStatsToolbar();
   renderStatsTable();
   renderCategoricalSummary();
+  renderDistributionView();
   renderCorrelationView();
   setOuterView("dashboard");
   setSelectedFile(null);
@@ -2899,9 +3537,10 @@ clearButton.addEventListener("click", () => {
   clearError();
 });
 
-if (dashboardTab && statisticsTab && correlationTab) {
+if (dashboardTab && statisticsTab && distributionTab && correlationTab) {
   dashboardTab.addEventListener("click", () => setOuterView("dashboard"));
   statisticsTab.addEventListener("click", () => setOuterView("statistics"));
+  distributionTab.addEventListener("click", () => setOuterView("distribution"));
   correlationTab.addEventListener("click", () => setOuterView("correlation"));
 }
 if (statsNumericDownloadButton) {
@@ -2956,6 +3595,67 @@ if (statsClearCategoricalButton) {
     selectedCategoricalStatsColumns = [];
     renderStatsToolbar();
     renderCategoricalSummary();
+  });
+}
+if (distVariableSelect) {
+  distVariableSelect.addEventListener("change", () => {
+    distributionColumn = distVariableSelect.value || null;
+    renderDistributionView();
+  });
+}
+if (distSplitSelect) {
+  distSplitSelect.addEventListener("change", () => {
+    distributionSplitColumn = distSplitSelect.value || NONE_OPTION;
+    renderDistributionView();
+  });
+}
+if (distViewSelect) {
+  distViewSelect.addEventListener("change", () => {
+    distributionViewMode = distViewSelect.value || "histogram";
+    renderDistributionView();
+  });
+}
+if (distOverlaySelect) {
+  distOverlaySelect.addEventListener("change", () => {
+    distributionOverlayMode = distOverlaySelect.value || "none";
+    renderDistributionView();
+  });
+}
+if (distNormalizationSelect) {
+  distNormalizationSelect.addEventListener("change", () => {
+    distributionNormalization = distNormalizationSelect.value || "density";
+    renderDistributionView();
+  });
+}
+if (distBinSlider) {
+  const onBinChange = () => {
+    distributionBinCount = Math.max(8, Math.min(80, Number(distBinSlider.value) || 24));
+    updateDistributionBinLabel();
+    renderDistributionView();
+  };
+  distBinSlider.addEventListener("input", onBinChange);
+  distBinSlider.addEventListener("change", onBinChange);
+}
+if (distResetButton) {
+  distResetButton.addEventListener("click", () => reset2DPlotZoom("dist-plot"));
+}
+if (distSaveButton) {
+  distSaveButton.addEventListener("click", () => {
+    const variable = safeFilenamePart(distributionColumn || "distribution");
+    const mode = safeFilenamePart(distributionViewMode || "plot");
+    download2DPlotImage("dist-plot", `${safeDatasetStem()}_${mode}_${variable}`);
+  });
+}
+if (distBoxSaveButton) {
+  distBoxSaveButton.addEventListener("click", () => {
+    const variable = safeFilenamePart(distributionColumn || "distribution");
+    download2DPlotImage("dist-box-plot", `${safeDatasetStem()}_box_${variable}`);
+  });
+}
+if (distViolinSaveButton) {
+  distViolinSaveButton.addEventListener("click", () => {
+    const variable = safeFilenamePart(distributionColumn || "distribution");
+    download2DPlotImage("dist-violin-plot", `${safeDatasetStem()}_violin_${variable}`);
   });
 }
 if (addFilterRuleButton) {
@@ -3058,6 +3758,7 @@ window.addEventListener("resize", () => {
   const categoricalColumns = categoricalColumnsForPayload(currentPayload)
     .filter((column) => selectedCategoricalStatsColumns.includes(column));
   updateCategoricalSheetHeight(categoricalColumns.length);
+  resizeDistributionPlot();
   if (hasPlotly()) {
     ["corr-pair-plot", "corr-matrix-heatmap", "corr-focus-plot"].forEach((id) => {
       const node = document.getElementById(id);
@@ -3075,6 +3776,7 @@ form.addEventListener("submit", async (event) => {
 
 renderStatsTable();
 renderCategoricalSummary();
+renderDistributionView();
 updateCorrelationAlphaLabel();
 renderCorrelationView();
 renderFilterBuilder();

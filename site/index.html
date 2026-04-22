@@ -67,6 +67,7 @@
         <div class="viewer-tabs">
           <button class="viewer-tab active" id="dashboard-tab" type="button">3D Dashboard</button>
           <button class="viewer-tab" id="statistics-tab" type="button">Statistics</button>
+          <button class="viewer-tab" id="distribution-tab" type="button">Distributions</button>
           <button class="viewer-tab" id="correlation-tab" type="button">Correlation</button>
         </div>
         <div class="viewer-context" id="viewer-context">No dashboard loaded yet</div>
@@ -207,12 +208,104 @@
             </div>
           </div>
         </div>
+        <div class="viewer-panel hidden" id="distribution-panel">
+          <div class="dist-stage">
+            <div class="stats-section-title">Distribution Explorer</div>
+            <div class="dist-layout">
+              <aside class="dist-sidebar">
+                <div class="dist-sidebar-panel">
+                  <div class="dist-control-group">
+                    <div class="dist-group-label">Variable Selection</div>
+                    <div class="dist-control-grid">
+                      <div class="dist-field">
+                        <label for="dist-variable-select">Numeric Variable</label>
+                        <select id="dist-variable-select"></select>
+                      </div>
+                      <div class="dist-field">
+                        <label for="dist-split-select">Split By</label>
+                        <select id="dist-split-select"></select>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="dist-control-group">
+                    <div class="dist-group-label">Primary Plot Settings</div>
+                    <div class="dist-control-grid">
+                      <div class="dist-field">
+                        <label for="dist-view-select">Primary View</label>
+                        <select id="dist-view-select">
+                          <option value="histogram">Histogram</option>
+                          <option value="kde">KDE</option>
+                          <option value="cdf">CDF</option>
+                        </select>
+                      </div>
+                      <div class="dist-field">
+                        <label for="dist-overlay-select">Overlay</label>
+                        <select id="dist-overlay-select"></select>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="dist-control-group dist-control-group-hist">
+                    <div class="dist-group-label">Histogram Settings</div>
+                    <div class="dist-control-grid">
+                      <div class="dist-field">
+                        <label for="dist-normalization-select">Histogram Scale</label>
+                        <select id="dist-normalization-select">
+                          <option value="count">Count</option>
+                          <option value="probability">Probability</option>
+                          <option value="density">Density</option>
+                        </select>
+                      </div>
+                      <div class="dist-field dist-field-slider" id="dist-bin-control">
+                        <div class="dist-slider-header">
+                          <label for="dist-bin-slider">Histogram Bins</label>
+                          <div class="dist-slider-value" id="dist-bin-value">24</div>
+                        </div>
+                        <input id="dist-bin-slider" type="range" min="8" max="80" step="1" value="24" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="dist-note" id="dist-note">Histogram + KDE is the default overlay because it reveals both shape and smooth trend on the same axis.</div>
+                <div class="dist-summary-grid" id="dist-summary-metrics"></div>
+              </aside>
+              <div class="dist-main">
+                <div class="dist-section-header">
+                  <div class="dist-section-title">Primary Distribution Plot</div>
+                  <div class="corr-plot-tools">
+                    <button class="corr-small-button" id="dist-reset-button" type="button">Reset Zoom</button>
+                    <button class="corr-small-button" id="dist-save-button" type="button">Save Plot</button>
+                  </div>
+                </div>
+                <div class="dist-plot dist-plot-main" id="dist-plot"></div>
+                <div class="dist-section-header">
+                  <div class="dist-section-title">Shape Summaries</div>
+                </div>
+                <div class="dist-secondary-grid">
+                  <div class="dist-secondary-card">
+                    <div class="dist-secondary-header">
+                      <div class="dist-secondary-title">Box Plot</div>
+                      <button class="corr-small-button" id="dist-box-save-button" type="button">Save Plot</button>
+                    </div>
+                    <div class="dist-plot dist-plot-secondary" id="dist-box-plot"></div>
+                  </div>
+                  <div class="dist-secondary-card">
+                    <div class="dist-secondary-header">
+                      <div class="dist-secondary-title">Violin Plot</div>
+                      <button class="corr-small-button" id="dist-violin-save-button" type="button">Save Plot</button>
+                    </div>
+                    <div class="dist-plot dist-plot-secondary" id="dist-violin-plot"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   </div>
 
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="./assets/app.js?v=20260422-24"></script>
+  <script src="./assets/app.js?v=20260422-29"></script>
 </body>
 </html>
