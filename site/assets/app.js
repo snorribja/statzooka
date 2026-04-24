@@ -715,8 +715,8 @@ function derivePreparedPayload(payload, config) {
         x: defaultX,
         y: defaultY,
         z: defaultZ,
-        color: defaultColumn(finalColorColumns) || NONE_OPTION,
-        size: defaultColumn(finalNumericColumns, new Set([defaultX, defaultY, defaultZ])) || NONE_OPTION,
+        color: NONE_OPTION,
+        size: NONE_OPTION,
         hover_id: defaultColumn(finalColumns) || NONE_OPTION,
       },
     };
@@ -3231,8 +3231,8 @@ function buildPayload(records, title) {
       x: defaultX,
       y: defaultY,
       z: defaultZ,
-      color: defaultColumn(colorColumns) || NONE_OPTION,
-      size: defaultColumn(numericColumns, new Set([defaultX, defaultY, defaultZ])) || NONE_OPTION,
+      color: NONE_OPTION,
+      size: NONE_OPTION,
       hover_id: defaultColumn(columns) || NONE_OPTION,
     },
   };
@@ -3442,6 +3442,11 @@ function buildDashboardHtml(payload) {
       gap: 16px;
       padding: 10px 12px 0;
     }
+    .plot-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
     .plot-title {
       font-size: 1.05rem;
       font-weight: 700;
@@ -3453,6 +3458,25 @@ function buildDashboardHtml(payload) {
       text-transform: uppercase;
       letter-spacing: 0.14em;
       white-space: nowrap;
+    }
+    .corr-small-button {
+      border: 1px solid rgba(174, 92, 255, 0.28);
+      background: rgba(174, 92, 255, 0.12);
+      color: #f4e8ff;
+      border-radius: 999px;
+      padding: 9px 13px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+    }
+    .corr-small-button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(174, 92, 255, 0.48);
+      background: rgba(174, 92, 255, 0.2);
+      color: #fff8ff;
     }
     .axis-pills {
       display: flex;
@@ -3499,6 +3523,7 @@ function buildDashboardHtml(payload) {
       .plot-area { height: auto; }
       #plot { height: 72vh; min-height: 520px; }
       .plot-header { flex-direction: column; }
+      .plot-header-actions { width: 100%; justify-content: space-between; }
     }
   </style>
 </head>
@@ -3567,7 +3592,10 @@ function buildDashboardHtml(payload) {
     <main class="plot-area">
       <div class="plot-header">
         <div class="plot-title" id="plot-title"></div>
-        <div class="plot-note">Interactive 3D View</div>
+        <div class="plot-header-actions">
+          <div class="plot-note">Interactive 3D View</div>
+          <button class="corr-small-button" id="save-plot-button" type="button">Save Plot</button>
+        </div>
       </div>
       <div class="axis-pills">
         <div class="axis-pill"><span class="axis-pill-label">X</span><span id="x-pill"></span></div>
@@ -3609,6 +3637,8 @@ function buildDashboardHtml(payload) {
     const xPillNode = document.getElementById("x-pill");
     const yPillNode = document.getElementById("y-pill");
     const zPillNode = document.getElementById("z-pill");
+    const plotNode = document.getElementById("plot");
+    const savePlotButton = document.getElementById("save-plot-button");
 
     function populateSelect(select, options, selectedValue, includeNone = false) {
       select.innerHTML = "";
@@ -3646,6 +3676,14 @@ function buildDashboardHtml(payload) {
         return value.toFixed(4).replace(/\\.0+$/, "").replace(/(\\.\\d*?)0+$/, "$1");
       }
       return String(value);
+    }
+
+    function safeFilenamePart(value) {
+      return String(value || "plot")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "plot";
     }
 
     function quantile(sortedValues, q) {
@@ -3751,13 +3789,13 @@ function buildDashboardHtml(payload) {
       const yTitle = logY.checked ? "log10(" + yColumn + ")" : yColumn;
       const zTitle = logZ.checked ? "log10(" + zColumn + ")" : zColumn;
       return {
-        paper_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "#ffffff",
         plot_bgcolor: "#ffffff",
         font: {
           family: '"Inter", "Segoe UI Variable", "Segoe UI", sans-serif',
           color: "#102132",
         },
-        margin: { l: 0, r: 0, t: 20, b: 0 },
+        margin: { l: 24, r: 24, t: 28, b: 24 },
         legend: {
           orientation: "h",
           yanchor: "bottom",
@@ -3919,6 +3957,24 @@ function buildDashboardHtml(payload) {
       sizeScaleValue.textContent = Number(sizeScaleSlider.value).toFixed(1) + "x";
     }
 
+    function downloadCurrentPlotImage() {
+      if (typeof Plotly === "undefined" || !plotNode || !plotNode.data) return;
+      const filename = [
+        safeFilenamePart(DATASET.title),
+        "3d",
+        safeFilenamePart(xSelect.value),
+        safeFilenamePart(ySelect.value),
+        safeFilenamePart(zSelect.value),
+      ].join("_");
+      Plotly.downloadImage(plotNode, {
+        format: "png",
+        scale: 2,
+        width: 1400,
+        height: 900,
+        filename,
+      });
+    }
+
     function render() {
       const xColumn = xSelect.value;
       const yColumn = ySelect.value;
@@ -3975,6 +4031,7 @@ function buildDashboardHtml(payload) {
           render();
         });
       });
+      savePlotButton.addEventListener("click", downloadCurrentPlotImage);
       render();
     }
     initialize();

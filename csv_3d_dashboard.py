@@ -162,15 +162,6 @@ def _build_payload(df: pd.DataFrame, *, title: str, max_categorical_levels: int)
     if default_z is None:
         raise ValueError("Could not choose a default Z axis.")
 
-    default_color = _default_column(
-        color_columns,
-        (),
-    )
-    default_size = _default_column(
-        numeric_columns,
-        (),
-        excluded={default_x, default_y, default_z},
-    )
     default_hover_id = _default_column(
         id_columns,
         (),
@@ -186,8 +177,8 @@ def _build_payload(df: pd.DataFrame, *, title: str, max_categorical_levels: int)
             "x": default_x,
             "y": default_y,
             "z": default_z,
-            "color": default_color or NONE_OPTION,
-            "size": default_size or NONE_OPTION,
+            "color": NONE_OPTION,
+            "size": NONE_OPTION,
             "hover_id": default_hover_id or NONE_OPTION,
         },
     }
@@ -379,6 +370,11 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
       gap: 16px;
       padding: 10px 12px 0;
     }}
+    .plot-header-actions {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }}
     .plot-title {{
       font-size: 1.05rem;
       font-weight: 700;
@@ -390,6 +386,25 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
       text-transform: uppercase;
       letter-spacing: 0.14em;
       white-space: nowrap;
+    }}
+    .corr-small-button {{
+      border: 1px solid rgba(174, 92, 255, 0.28);
+      background: rgba(174, 92, 255, 0.12);
+      color: #f4e8ff;
+      border-radius: 999px;
+      padding: 9px 13px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+    }}
+    .corr-small-button:hover {{
+      transform: translateY(-1px);
+      border-color: rgba(174, 92, 255, 0.48);
+      background: rgba(174, 92, 255, 0.2);
+      color: #fff8ff;
     }}
     .axis-pills {{
       display: flex;
@@ -457,6 +472,10 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
       }}
       .plot-header {{
         flex-direction: column;
+      }}
+      .plot-header-actions {{
+        width: 100%;
+        justify-content: space-between;
       }}
     }}
     @media (max-width: 720px) {{
@@ -556,7 +575,10 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
     <main class="plot-area">
       <div class="plot-header">
         <div class="plot-title" id="plot-title"></div>
-        <div class="plot-note">Interactive 3D View</div>
+        <div class="plot-header-actions">
+          <div class="plot-note">Interactive 3D View</div>
+          <button class="corr-small-button" id="save-plot-button" type="button">Save Plot</button>
+        </div>
       </div>
       <div class="axis-pills">
         <div class="axis-pill"><span class="axis-pill-label">X</span><span id="x-pill"></span></div>
@@ -598,6 +620,8 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
     const xPillNode = document.getElementById("x-pill");
     const yPillNode = document.getElementById("y-pill");
     const zPillNode = document.getElementById("z-pill");
+    const plotNode = document.getElementById("plot");
+    const savePlotButton = document.getElementById("save-plot-button");
 
     function populateSelect(select, options, selectedValue, includeNone = false) {{
       select.innerHTML = "";
@@ -643,6 +667,14 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
         return value.toFixed(4).replace(/\\.0+$/, "").replace(/(\\.\\d*?)0+$/, "$1");
       }}
       return String(value);
+    }}
+
+    function safeFilenamePart(value) {{
+      return String(value || "plot")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "") || "plot";
     }}
 
     function quantile(sortedValues, q) {{
@@ -789,13 +821,13 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
       const zTitle = logZ.checked ? `log10(${{zColumn}})` : zColumn;
 
       return {{
-        paper_bgcolor: "rgba(0,0,0,0)",
+        paper_bgcolor: "#ffffff",
         plot_bgcolor: "#ffffff",
         font: {{
           family: '"Inter", "Segoe UI Variable", "Segoe UI", sans-serif',
           color: "#102132",
         }},
-        margin: {{ l: 0, r: 0, t: 20, b: 0 }},
+        margin: {{ l: 24, r: 24, t: 28, b: 24 }},
         legend: {{
           orientation: "h",
           yanchor: "bottom",
@@ -803,7 +835,7 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
           xanchor: "left",
           x: 0,
           bgcolor: "rgba(0,0,0,0)",
-          font: {{ color: "#cfe7f8" }},
+          font: {{ color: "#102132" }},
         }},
         scene: {{
           xaxis: {{
@@ -1010,6 +1042,26 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
       sizeScaleValue.textContent = `${{Number(sizeScaleSlider.value).toFixed(1)}}x`;
     }}
 
+    function downloadCurrentPlotImage() {{
+      if (typeof Plotly === "undefined" || !plotNode || !plotNode.data) {{
+        return;
+      }}
+      const filename = [
+        safeFilenamePart(DATASET.title),
+        "3d",
+        safeFilenamePart(xSelect.value),
+        safeFilenamePart(ySelect.value),
+        safeFilenamePart(zSelect.value),
+      ].join("_");
+      Plotly.downloadImage(plotNode, {{
+        format: "png",
+        scale: 2,
+        width: 1400,
+        height: 900,
+        filename,
+      }});
+    }}
+
     function resizePlot() {{
       if (typeof Plotly === "undefined" || !plotNode || !plotNode.data) {{
         return;
@@ -1046,6 +1098,8 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
           render();
         }});
       }});
+
+      savePlotButton.addEventListener("click", downloadCurrentPlotImage);
 
       render();
       initializeResponsiveBehavior();
