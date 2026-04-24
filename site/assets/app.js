@@ -75,6 +75,10 @@ const statsSelectVisibleCategoricalButton = document.getElementById("stats-selec
 const statsClearCategoricalButton = document.getElementById("stats-clear-categorical-button");
 const statsSheet = document.getElementById("stats-sheet");
 const categorySheet = document.getElementById("category-sheet");
+const missingColumnSelect = document.getElementById("missing-column-select");
+const missingValuesSummary = document.getElementById("missing-values-summary");
+const missingValuesFocus = document.getElementById("missing-values-focus");
+const missingValuesSheet = document.getElementById("missing-values-sheet");
 const distVariableSelect = document.getElementById("dist-variable-select");
 const distSplitSelect = document.getElementById("dist-split-select");
 const distViewSelect = document.getElementById("dist-view-select");
@@ -152,6 +156,7 @@ let selectedStatsColumns = [];
 let selectedCategoricalStatsColumns = [];
 let statsNumericSearchValue = "";
 let statsCategoricalSearchValue = "";
+let selectedMissingColumn = null;
 let activeOuterView = "dashboard";
 let activePrepView = "transform";
 let distributionColumn = null;
@@ -421,6 +426,7 @@ function buildPersistenceSnapshot() {
       selectedCategoricalStatsColumns: [...selectedCategoricalStatsColumns],
       statsNumericSearchValue,
       statsCategoricalSearchValue,
+      selectedMissingColumn,
       distributionColumn,
       distributionSplitColumn,
       distributionViewMode,
@@ -486,6 +492,7 @@ function resetApplicationState() {
   selectedCategoricalStatsColumns = [];
   statsNumericSearchValue = "";
   statsCategoricalSearchValue = "";
+  selectedMissingColumn = null;
   distributionColumn = null;
   distributionSplitColumn = NONE_OPTION;
   distributionViewMode = "histogram";
@@ -518,6 +525,7 @@ function resetApplicationState() {
   renderStatsToolbar();
   renderStatsTable();
   renderCategoricalSummary();
+  renderMissingValuesSummary();
   renderDistributionView();
   renderOutlierView();
   updateCorrelationAlphaLabel();
@@ -561,6 +569,7 @@ function restorePersistedState(snapshot) {
   selectedCategoricalStatsColumns = Array.isArray(snapshot.view?.selectedCategoricalStatsColumns) ? [...snapshot.view.selectedCategoricalStatsColumns] : [];
   statsNumericSearchValue = typeof snapshot.view?.statsNumericSearchValue === "string" ? snapshot.view.statsNumericSearchValue : "";
   statsCategoricalSearchValue = typeof snapshot.view?.statsCategoricalSearchValue === "string" ? snapshot.view.statsCategoricalSearchValue : "";
+  selectedMissingColumn = typeof snapshot.view?.selectedMissingColumn === "string" ? snapshot.view.selectedMissingColumn : null;
   distributionColumn = snapshot.view?.distributionColumn || null;
   distributionSplitColumn = snapshot.view?.distributionSplitColumn || NONE_OPTION;
   distributionViewMode = snapshot.view?.distributionViewMode || "histogram";
@@ -671,6 +680,7 @@ async function loadSelectedCsv() {
     selectedCategoricalStatsColumns = categoricalColumnsForPayload(payload).slice(0, Math.min(6, categoricalColumnsForPayload(payload).length));
     statsNumericSearchValue = "";
     statsCategoricalSearchValue = "";
+    selectedMissingColumn = payload.columns[0] || null;
     distributionColumn = payload.numeric_columns[0] || null;
     distributionSplitColumn = NONE_OPTION;
     distributionViewMode = "histogram";
@@ -1236,6 +1246,9 @@ function updatePreparedSelectionState() {
     categoricalColumnsForPayload(currentPayload),
     selectedCategoricalStatsColumns,
   );
+  if (!currentPayload.columns.includes(selectedMissingColumn)) {
+    selectedMissingColumn = currentPayload.columns[0] || null;
+  }
   if (!currentPayload.numeric_columns.includes(distributionColumn)) {
     distributionColumn = currentPayload.numeric_columns[0] || null;
   }
@@ -1266,6 +1279,7 @@ function refreshActivePayload() {
     renderStatsToolbar();
     renderStatsTable();
     renderCategoricalSummary();
+    renderMissingValuesSummary();
     renderDistributionView();
     renderOutlierView();
     renderCorrelationView();
@@ -1281,6 +1295,7 @@ function refreshActivePayload() {
   renderStatsToolbar();
   renderStatsTable();
   renderCategoricalSummary();
+  renderMissingValuesSummary();
   renderDistributionView();
   renderOutlierView();
   renderCorrelationView();
@@ -2136,6 +2151,121 @@ function renderCategoricalSummary() {
   html += "</tbody></table>";
   categorySheet.innerHTML = html;
   updateCategoricalSheetHeight(selectedColumns.length);
+}
+
+function isMissingValue(value) {
+  return normalizeValue(value) === null;
+}
+
+function missingSummaryForColumn(payload, column) {
+  const totalRows = payload.records.length;
+  const missingCount = payload.records.reduce((count, row) => {
+    return count + (isMissingValue(row[column]) ? 1 : 0);
+  }, 0);
+  const presentCount = totalRows - missingCount;
+  const missingPercent = totalRows ? (missingCount / totalRows) * 100 : 0;
+  return { column, totalRows, missingCount, presentCount, missingPercent };
+}
+
+function missingSummariesForPayload(payload) {
+  if (!payload) return [];
+  return payload.columns
+    .map((column) => missingSummaryForColumn(payload, column))
+    .sort((left, right) => {
+      if (right.missingPercent !== left.missingPercent) return right.missingPercent - left.missingPercent;
+      if (right.missingCount !== left.missingCount) return right.missingCount - left.missingCount;
+      return left.column.localeCompare(right.column, undefined, { numeric: true, sensitivity: "base" });
+    });
+}
+
+function formatMissingPercent(value) {
+  if (!Number.isFinite(value)) return "0%";
+  if (value === 0 || value === 100) return `${value.toFixed(0)}%`;
+  return `${value.toFixed(1)}%`;
+}
+
+function renderMissingValuesSummary() {
+  if (!missingValuesSheet) return;
+  if (!currentPayload) {
+    if (missingColumnSelect) {
+      missingColumnSelect.innerHTML = "";
+      missingColumnSelect.disabled = true;
+    }
+    if (missingValuesSummary) missingValuesSummary.textContent = "Upload a CSV to review missing values.";
+    if (missingValuesFocus) missingValuesFocus.innerHTML = "";
+    missingValuesSheet.innerHTML = '<div class="stats-empty small">Upload a CSV to see missing-value percentages.</div>';
+    return;
+  }
+
+  const summaries = missingSummariesForPayload(currentPayload);
+  if (!currentPayload.columns.includes(selectedMissingColumn)) {
+    selectedMissingColumn = summaries[0]?.column || currentPayload.columns[0] || null;
+  }
+
+  if (missingColumnSelect) {
+    missingColumnSelect.disabled = !summaries.length;
+    missingColumnSelect.innerHTML = summaries
+      .slice()
+      .sort((left, right) => left.column.localeCompare(right.column, undefined, { numeric: true, sensitivity: "base" }))
+      .map((summary) => {
+        const selected = summary.column === selectedMissingColumn ? " selected" : "";
+        return `<option value="${escapeHtmlAttribute(summary.column)}"${selected}>${escapeHtml(summary.column)}</option>`;
+      })
+      .join("");
+  }
+
+  const selectedSummary = summaries.find((summary) => summary.column === selectedMissingColumn) || summaries[0] || null;
+  const columnsWithMissing = summaries.filter((summary) => summary.missingCount > 0).length;
+  if (missingValuesSummary) {
+    missingValuesSummary.textContent = columnsWithMissing
+      ? `${columnsWithMissing.toLocaleString()} of ${summaries.length.toLocaleString()} columns contain missing values.`
+      : `No missing values found across ${summaries.length.toLocaleString()} columns.`;
+  }
+
+  if (missingValuesFocus) {
+    if (!selectedSummary) {
+      missingValuesFocus.innerHTML = '<div class="missing-values-empty">No columns available.</div>';
+    } else {
+      missingValuesFocus.innerHTML = `
+        <div class="missing-values-metric">
+          <span>Missing</span>
+          <strong>${escapeHtml(formatMissingPercent(selectedSummary.missingPercent))}</strong>
+        </div>
+        <div class="missing-values-metric">
+          <span>Missing Rows</span>
+          <strong>${escapeHtml(selectedSummary.missingCount.toLocaleString())}</strong>
+        </div>
+        <div class="missing-values-metric">
+          <span>Present Rows</span>
+          <strong>${escapeHtml(selectedSummary.presentCount.toLocaleString())}</strong>
+        </div>
+      `;
+    }
+  }
+
+  if (!summaries.length) {
+    missingValuesSheet.innerHTML = '<div class="stats-empty small">No columns are available for missing-value analysis.</div>';
+    return;
+  }
+
+  const topSummaries = summaries.slice(0, Math.min(10, summaries.length));
+  let html = '<table class="stats-table missing-values-table"><thead><tr>';
+  ["Parameter", "Missing %", "Missing Rows", "Present Rows", "Total Rows"].forEach((header) => {
+    html += renderStatsHeaderCell(header);
+  });
+  html += "</tr></thead><tbody>";
+  topSummaries.forEach((summary) => {
+    const selectedClass = summary.column === selectedMissingColumn ? ' class="selected"' : "";
+    html += `<tr${selectedClass}>`;
+    html += `<th class="stats-parameter">${escapeHtml(summary.column)}</th>`;
+    html += `<td>${escapeHtml(formatMissingPercent(summary.missingPercent))}</td>`;
+    html += `<td>${escapeHtml(summary.missingCount.toLocaleString())}</td>`;
+    html += `<td>${escapeHtml(summary.presentCount.toLocaleString())}</td>`;
+    html += `<td>${escapeHtml(summary.totalRows.toLocaleString())}</td>`;
+    html += "</tr>";
+  });
+  html += "</tbody></table>";
+  missingValuesSheet.innerHTML = html;
 }
 
 function distributionSplitColumnsForPayload(payload) {
@@ -5572,6 +5702,9 @@ fileInput.addEventListener("change", () => {
 });
 
 clearButton.addEventListener("click", () => {
+  const shouldClear = window.confirm("Are you sure you want to clear all data and settings?");
+  if (!shouldClear) return;
+
   if (persistenceWriteTimer) {
     clearTimeout(persistenceWriteTimer);
     persistenceWriteTimer = 0;
@@ -5652,6 +5785,13 @@ if (statsClearCategoricalButton) {
     selectedCategoricalStatsColumns = [];
     renderStatsToolbar();
     renderCategoricalSummary();
+    persistAppStateSoon();
+  });
+}
+if (missingColumnSelect) {
+  missingColumnSelect.addEventListener("change", () => {
+    selectedMissingColumn = missingColumnSelect.value || null;
+    renderMissingValuesSummary();
     persistAppStateSoon();
   });
 }
@@ -5986,6 +6126,7 @@ form.addEventListener("submit", async (event) => {
 
 renderStatsTable();
 renderCategoricalSummary();
+renderMissingValuesSummary();
 renderDistributionView();
 renderOutlierView();
 updateCorrelationAlphaLabel();

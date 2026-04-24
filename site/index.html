@@ -21,7 +21,7 @@
     <section class="panel">
       <div class="eyebrow">CSV to Website</div>
       <h1>Drop in a file. Use the dashboard.</h1>
-      <p class="lede">Upload a CSV and the 3D dashboard opens immediately on the right.</p>
+      <p class="lede">Upload a CSV and the 3D dashboard opens immediately on the right. All processing happens locally in your browser - no data is sent over the internet, so you can safely work with sensitive data.</p>
 
       <form id="upload-form">
         <input id="csv-file" name="csv_file" type="file" accept=".csv,text/csv" />
@@ -418,6 +418,22 @@
             </div>
             <div class="stats-copy">Categorical summaries appear only for the selected columns, using the same add/remove workflow as numeric parameters.</div>
             <div class="stats-sheet categorical" id="category-sheet"></div>
+            <div class="stats-section-title">Missing Values</div>
+            <div class="stats-control-panel missing-values-panel">
+              <div class="stats-control-header">
+                <div>
+                  <div class="stats-control-title">Inspect missing values</div>
+                  <div class="stats-control-subtitle" id="missing-values-summary">Upload a CSV to review missing values.</div>
+                </div>
+              </div>
+              <label class="stats-search-field missing-values-field" for="missing-column-select">
+                <span>Parameter</span>
+                <select id="missing-column-select"></select>
+              </label>
+              <div class="missing-values-focus" id="missing-values-focus"></div>
+            </div>
+            <div class="stats-copy">Columns are ranked by the share of prepared rows with blank or missing values.</div>
+            <div class="stats-sheet missing-values-sheet" id="missing-values-sheet"></div>
           </div>
         </div>
         <div class="viewer-panel hidden" id="correlation-panel">
