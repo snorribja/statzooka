@@ -187,7 +187,7 @@ let dashboardViewState = null;
 const responsivePlotObservedSizes = new WeakMap();
 const SCALING_OPTIONS = [
   { value: "none", label: "No scaling" },
-  { value: "standardize", label: "Standardize (z-score)" },
+  { value: "standardize", label: "Standardize (z-score, sample SD)" },
   { value: "normalize", label: "Normalize (min-max)" },
 ];
 const OUTLIER_ROW_TABLE_LIMIT = 100;
@@ -206,7 +206,7 @@ const OUTLIER_METHOD_CONFIG = {
     min: 2,
     max: 5,
     step: 0.1,
-    note: "Flags values with absolute z-score above the cutoff. 3.0 is a common default.",
+    note: "Flags values with absolute z-score above the cutoff, using the sample standard deviation. 3.0 is a common default.",
   },
   modified_zscore: {
     label: "Modified Z-Score Cutoff",
@@ -244,12 +244,13 @@ const FILTER_OPERATORS = {
 };
 const STAT_TERM_EXPLANATIONS = {
   "Parameter": "The dataset feature (column) this row represents.",
-  "Mean ± Std": "Mean is the average value. Std (standard deviation) shows how spread out the values are around the mean.",
+  "Rows Used": "Number of rows with usable numeric values for this column.",
+  "Mean ± Sample Std Dev": "Mean is the average value. Sample standard deviation uses n - 1 and shows how spread out the values are around the mean.",
   "Median": "The middle value when the data is sorted.",
   "[Min, Max]": "The smallest and largest observed values.",
-  "[Q1, Q3]": "Q1 is the 25th percentile and Q3 is the 75th percentile. The middle 50% lies between them.",
+  "[Q1, Q3]": "Q1 and Q3 are the 25th and 75th percentiles using linear interpolation, the default method in many statistical tools.",
   "Skewness": "How asymmetric the distribution is. Positive means a longer right tail, negative means a longer left tail.",
-  "Kurtosis": "How heavy the tails are compared with a normal distribution. Higher values mean more extreme outliers.",
+  "Excess Kurtosis": "Adjusted excess kurtosis compares tail weight with a normal distribution. A normal distribution is near 0.",
   "Count": "Number of non-empty entries in this categorical column.",
   "Unique Values": "Number of distinct category values.",
   "Top Value": "Most frequent category value (mode).",
@@ -259,19 +260,21 @@ const CORRELATION_METRIC_EXPLANATIONS = {
   "Pearson": "Measures linear relationship from -1 to 1. Values near 1 or -1 indicate a strong straight-line relationship; values near 0 indicate little linear association.",
   "Spearman": "Measures monotonic rank relationship from -1 to 1. It is more robust to outliers and captures ordered trends even when the relationship is not perfectly linear.",
   "Rows Used": "Number of rows with usable values for both selected variables after filtering and missing-value handling.",
-  "Curve": "Shows which trendline is currently drawn on the scatter plot. Linear is a straight line; non-linear selects the better quadratic or cubic fit.",
-  "Fit R²": "Indicates how much variance in Y is explained by the displayed trendline. Closer to 1 means the fitted curve tracks the data more closely.",
+  "Curve": "Shows which trendline is currently drawn on the scatter plot. Linear is a straight line; polynomial mode chooses the quadratic or cubic fit with the highest in-sample R².",
+  "Fit R²": "In-sample fit measure for the displayed trendline. Closer to 1 means the fitted curve tracks these data more closely, but it does not prove predictive performance.",
 };
 const DISTRIBUTION_METRIC_EXPLANATIONS = {
   "Rows Used": "Rows with a usable numeric value for the selected variable after filtering.",
-  "Missing": "Rows where the selected numeric value is missing or non-numeric.",
+  "Numeric Missing": "Rows where the selected numeric value is missing or non-numeric.",
+  "Split Missing": "Rows with a usable numeric value but no usable split-group value.",
   "Mean": "Arithmetic average of the included values.",
   "Median": "Middle value after sorting the included values.",
   "IQR": "Interquartile range, calculated as Q3 minus Q1. It captures the middle 50% spread.",
-  "Std Dev": "Standard deviation of the included values.",
+  "Sample Std Dev": "Sample standard deviation of the included values, calculated with n - 1.",
 };
 const DISTRIBUTION_SINGLE_COLOR = "#8f3dff";
 const DISTRIBUTION_GROUP_COLORS = ["#8f3dff", "#00c2ff", "#ff8a1f", "#22c55e", "#ff4d6d", "#facc15", "#14b8a6", "#7c5cff"];
+const DISTRIBUTION_LINE_COLORS = ["#f8fafc", "#ffe066", "#8ae1ff", "#c6ff8f", "#ffb0c0", "#fff1a8", "#98f5e1", "#d6ccff"];
 const DISTRIBUTION_PAPER_BG = "rgba(17, 19, 27, 0.94)";
 const DISTRIBUTION_PLOT_BG = "#141925";
 const DISTRIBUTION_GRID_COLOR = "rgba(148, 163, 184, 0.12)";
@@ -789,6 +792,47 @@ function cloneTransformConfig(config = defaultTransformConfig()) {
   };
 }
 
+function displayNameForColumn(payload, column) {
+  if (!column || column === NONE_OPTION) return column;
+  return payload?.display_names?.[column] || column;
+}
+
+function currentDisplayNameForColumn(column) {
+  return displayNameForColumn(currentPayload, column);
+}
+
+function applyTransformLabel(baseLabel, column, config, payload) {
+  const safeConfig = cloneTransformConfig(config || defaultTransformConfig());
+  const isNumeric = payload?.numeric_columns?.includes(column);
+  let label = baseLabel || column;
+  if (!isNumeric) return label;
+  if (safeConfig.log.columns.includes(column)) {
+    label = `log10(${label})`;
+  }
+  if (safeConfig.scaling.mode === "standardize" && safeConfig.scaling.columns.includes(column)) {
+    label = `z-score(${label})`;
+  } else if (safeConfig.scaling.mode === "normalize" && safeConfig.scaling.columns.includes(column)) {
+    label = `min-max(${label})`;
+  }
+  return label;
+}
+
+function uniqueGeneratedColumnName(baseName, usedNames) {
+  const base = String(baseName || "encoded").trim() || "encoded";
+  if (!usedNames.has(base)) {
+    usedNames.add(base);
+    return base;
+  }
+  let suffix = 2;
+  let candidate = `${base}_${suffix}`;
+  while (usedNames.has(candidate)) {
+    suffix += 1;
+    candidate = `${base}_${suffix}`;
+  }
+  usedNames.add(candidate);
+  return candidate;
+}
+
 function columnTypeForPayload(payload, column) {
   if (!payload || !column) return "text";
   return payload.numeric_columns.includes(column) ? "numeric" : "text";
@@ -993,13 +1037,20 @@ function validRuleCount(payload, rules) {
 
 function toggleTransformColumn(section, column) {
   if (!draftTransformConfig) return;
-  const current = new Set(draftTransformConfig[section].columns);
+  const target = Array.isArray(draftTransformConfig[section])
+    ? draftTransformConfig[section]
+    : draftTransformConfig[section].columns;
+  const current = new Set(target);
   if (current.has(column)) {
     current.delete(column);
   } else {
     current.add(column);
   }
-  draftTransformConfig[section].columns = [...current];
+  if (Array.isArray(draftTransformConfig[section])) {
+    draftTransformConfig[section] = [...current];
+  } else {
+    draftTransformConfig[section].columns = [...current];
+  }
   renderTransformationView();
   persistAppStateSoon();
 }
@@ -1030,6 +1081,12 @@ function previewConfigStatus(payload, config) {
 function derivePreparedPayload(payload, config) {
   if (!payload) return null;
   const safeConfig = cloneTransformConfig(config || defaultTransformConfig());
+  const displayNames = Object.fromEntries(
+    payload.columns.map((column) => [
+      column,
+      applyTransformLabel(displayNameForColumn(payload, column), column, safeConfig, payload),
+    ]),
+  );
   const originalRecords = payload.records.map(cloneRecord);
   const keepPreview = filterPreviewForRules(payload, safeConfig.keepRules, "keep");
   const keptRecords = keepPreview.includedRecords.map(cloneRecord);
@@ -1111,43 +1168,47 @@ function derivePreparedPayload(payload, config) {
 
   const encodedColumns = safeConfig.encoding.columns.filter((column) => payload.columns.includes(column) && !payload.numeric_columns.includes(column));
   let encodedAddedColumns = 0;
+  const encodedColumnMap = new Map();
   if (encodedColumns.length) {
-    const encodedValueMap = new Map();
+    const encodedSet = new Set(encodedColumns);
+    const usedColumnNames = new Set(payload.columns.filter((column) => !encodedSet.has(column)));
+    const levelSourceRecords = workingRecords.length ? workingRecords : payload.records;
     encodedColumns.forEach((column) => {
       const values = new Set();
-      workingRecords.forEach((row) => {
+      levelSourceRecords.forEach((row) => {
         const value = normalizeValue(row[column]);
         if (value !== null) values.add(String(value));
       });
-      encodedValueMap.set(column, [...values].sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })));
+      const entries = [...values]
+        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }))
+        .map((level) => {
+          const generatedColumn = uniqueGeneratedColumnName(`${column}__${level}`, usedColumnNames);
+          displayNames[generatedColumn] = `${displayNameForColumn(payload, column)} = ${level}`;
+          return { level, column: generatedColumn };
+        });
+      delete displayNames[column];
+      encodedColumnMap.set(column, entries);
     });
     workingRecords = workingRecords.map((row) => {
       const nextRow = { ...row };
       encodedColumns.forEach((column) => {
         const raw = normalizeValue(row[column]);
-        const levels = encodedValueMap.get(column) || [];
-        levels.forEach((level) => {
-          nextRow[`${column}__${level}`] = raw !== null && String(raw) === level ? 1 : 0;
+        const entries = encodedColumnMap.get(column) || [];
+        entries.forEach((entry) => {
+          nextRow[entry.column] = raw !== null && String(raw) === entry.level ? 1 : 0;
         });
         delete nextRow[column];
       });
       return nextRow;
     });
-    encodedAddedColumns = [...encodedValueMap.values()].reduce((sum, values) => sum + values.length, 0);
+    encodedAddedColumns = [...encodedColumnMap.values()].reduce((sum, entries) => sum + entries.length, 0);
   }
-
   const preparedTitle = safeConfig.scaling.mode === "none" && !logColumns.length && !encodedColumns.length && !safeConfig.keepRules.length && !safeConfig.excludeRules.length
     ? payload.title
     : `${payload.title} | Prepared`;
   let derivedPayload;
   if (!workingRecords.length) {
-    const encodedColumnNames = [];
-    encodedColumns.forEach((column) => {
-      const values = new Set(payload.records.map((row) => normalizeValue(row[column])).filter((value) => value !== null).map((value) => String(value)));
-      [...values]
-        .sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }))
-        .forEach((value) => encodedColumnNames.push(`${column}__${value}`));
-    });
+    const encodedColumnNames = [...encodedColumnMap.values()].flat().map((entry) => entry.column);
     const encodedSet = new Set(encodedColumns);
     const finalColumns = payload.columns.filter((column) => !encodedSet.has(column)).concat(encodedColumnNames).sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
     const finalNumericColumns = uniqueOrderedColumns([
@@ -1168,6 +1229,7 @@ function derivePreparedPayload(payload, config) {
       title: preparedTitle,
       records: [],
       columns: finalColumns,
+      display_names: Object.fromEntries(finalColumns.map((column) => [column, displayNames[column] || column])),
       numeric_columns: finalNumericColumns,
       color_columns: finalColorColumns,
       defaults: {
@@ -1180,7 +1242,7 @@ function derivePreparedPayload(payload, config) {
       },
     };
   } else {
-    derivedPayload = buildPayload(workingRecords, preparedTitle);
+    derivedPayload = buildPayload(workingRecords, preparedTitle, displayNames);
   }
   return {
     payload: derivedPayload,
@@ -1311,7 +1373,7 @@ function renderTransformTagSelector(container, columns, selectedColumns, emptyMe
   }
   columns.forEach((column) => {
     container.appendChild(
-      createSelectorOption(column, selectedColumns.includes(column), () => onToggle(column)),
+      createSelectorOption(column, selectedColumns.includes(column), () => onToggle(column), displayNameForColumn(sourcePayload || currentPayload, column)),
     );
   });
 }
@@ -1339,6 +1401,7 @@ function renderScaleModeSelector() {
     transformScaleMode.appendChild(label);
   });
 }
+
 
 function renderRuleBuilder({ container, emptyNode, rules, labelText, operatorText, helperText, group }) {
   if (!container || !emptyNode) return;
@@ -1532,7 +1595,7 @@ function renderPreviewTable(payload) {
   const previewRows = payload.records.slice(0, 8);
   let html = '<table class="stats-table"><thead><tr>';
   previewColumns.forEach((column) => {
-    html += `<th>${escapeHtml(column)}</th>`;
+    html += `<th>${escapeHtml(displayNameForColumn(payload, column))}</th>`;
   });
   html += "</tr></thead><tbody>";
   previewRows.forEach((row) => {
@@ -1785,6 +1848,7 @@ function bracketedPairText(left, right) {
 
 function statsCellValues(stats) {
   return [
+    formatStatValue(stats.count),
     meanPlusStdText(stats.mean, stats.std_dev),
     formatStatValue(stats.median),
     bracketedPairText(stats.min, stats.max),
@@ -1901,14 +1965,14 @@ function downloadNumericStatsCsv() {
   if (!currentPayload || !selectedStatsColumns.length) return;
 
   const lines = [];
-  const numericHeaders = ["Parameter", "Mean ± Std", "Median", "[Min, Max]", "[Q1, Q3]", "Skewness", "Kurtosis"];
+  const numericHeaders = ["Parameter", "Rows Used", "Mean ± Sample Std Dev", "Median", "[Min, Max]", "[Q1, Q3]", "Skewness", "Excess Kurtosis"];
   lines.push(numericHeaders.map(csvEscape).join(","));
 
   const statsByColumn = new Map(
     selectedStatsColumns.map((column) => [column, numericStatsForColumn(currentPayload, column)]),
   );
   selectedStatsColumns.forEach((column) => {
-    const row = [column, ...statsCellValues(statsByColumn.get(column))];
+    const row = [displayNameForColumn(currentPayload, column), ...statsCellValues(statsByColumn.get(column))];
     lines.push(row.map(csvEscape).join(","));
   });
 
@@ -1926,7 +1990,7 @@ function downloadCategoricalSummaryCsv() {
   lines.push(headers.map(csvEscape).join(","));
   const summaries = new Map(categoricalColumns.map((column) => [column, categoricalSummaryForColumn(currentPayload, column)]));
   categoricalColumns.forEach((column) => {
-    const row = [column, ...categoricalSummaryCellValues(summaries.get(column))];
+    const row = [displayNameForColumn(currentPayload, column), ...categoricalSummaryCellValues(summaries.get(column))];
     lines.push(row.map(csvEscape).join(","));
   });
 
@@ -1936,9 +2000,10 @@ function downloadCategoricalSummaryCsv() {
 function numericStatsForColumn(payload, column) {
   const values = payload.records.map((row) => toFiniteNumber(row[column])).filter((value) => value !== null);
   if (!values.length) {
-    return { mean: null, median: null, std_dev: null, min: null, q1: null, q3: null, max: null, skewness: null, kurtosis: null };
+    return { count: 0, mean: null, median: null, std_dev: null, min: null, q1: null, q3: null, max: null, skewness: null, kurtosis: null };
   }
   return {
+    count: values.length,
     mean: meanValue(values),
     median: medianValue(values),
     std_dev: standardDeviation(values),
@@ -1959,18 +2024,20 @@ function categoricalSummaryForColumn(payload, column) {
     const key = String(value);
     counts.set(key, (counts.get(key) || 0) + 1);
   });
-  let top = null;
   let frequency = 0;
   for (const [key, count] of counts.entries()) {
     if (count > frequency) {
-      top = key;
       frequency = count;
     }
   }
+  const topValues = [...counts.entries()]
+    .filter(([, count]) => count === frequency)
+    .map(([key]) => key);
+  const top = topValues.length > 1 ? `${topValues.join(", ")} (tie)` : topValues[0];
   return { count: values.length, unique: counts.size, top, frequency };
 }
 
-function createSelectorOption(column, isSelected, onToggle) {
+function createSelectorOption(column, isSelected, onToggle, displayLabel = column) {
   const label = document.createElement("label");
   label.className = "stats-selector-option" + (isSelected ? " active" : "");
   label.setAttribute("role", "option");
@@ -1983,7 +2050,7 @@ function createSelectorOption(column, isSelected, onToggle) {
 
   const text = document.createElement("span");
   text.className = "stats-selector-option-text";
-  text.textContent = column;
+  text.textContent = displayLabel;
 
   label.append(checkbox, text);
   return label;
@@ -2014,7 +2081,7 @@ function renderColumnSelector({
 
   filteredColumns.forEach((column) => {
     container.appendChild(
-      createSelectorOption(column, selectedColumns.includes(column), () => onToggle(column)),
+      createSelectorOption(column, selectedColumns.includes(column), () => onToggle(column), displayNameForColumn(currentPayload, column)),
     );
   });
 }
@@ -2090,7 +2157,7 @@ function renderStatsTable() {
   }
 
   const statsByColumn = new Map(selectedStatsColumns.map((column) => [column, numericStatsForColumn(currentPayload, column)]));
-  const headers = ["Parameter", "Mean ± Std", "Median", "[Min, Max]", "[Q1, Q3]", "Skewness", "Kurtosis"];
+  const headers = ["Parameter", "Rows Used", "Mean ± Sample Std Dev", "Median", "[Min, Max]", "[Q1, Q3]", "Skewness", "Excess Kurtosis"];
   let html = '<table class="stats-table"><thead><tr>';
   headers.forEach((header) => {
     html += renderStatsHeaderCell(header);
@@ -2100,7 +2167,7 @@ function renderStatsTable() {
   selectedStatsColumns.forEach((column) => {
     const stats = statsByColumn.get(column);
     const metricValues = statsCellValues(stats);
-    html += `<tr><th class="stats-parameter">${escapeHtml(column)}</th>`;
+    html += `<tr><th class="stats-parameter">${escapeHtml(displayNameForColumn(currentPayload, column))}</th>`;
     metricValues.forEach((value) => {
       html += `<td>${escapeHtml(String(value))}</td>`;
     });
@@ -2141,7 +2208,7 @@ function renderCategoricalSummary() {
   html += "</tr></thead><tbody>";
 
   selectedColumns.forEach((column) => {
-    html += `<tr><th class="stats-parameter">${escapeHtml(column)}</th>`;
+    html += `<tr><th class="stats-parameter">${escapeHtml(displayNameForColumn(currentPayload, column))}</th>`;
     categoricalSummaryCellValues(summaries.get(column)).forEach((value) => {
       html += `<td>${escapeHtml(String(value))}</td>`;
     });
@@ -2209,7 +2276,7 @@ function renderMissingValuesSummary() {
       .sort((left, right) => left.column.localeCompare(right.column, undefined, { numeric: true, sensitivity: "base" }))
       .map((summary) => {
         const selected = summary.column === selectedMissingColumn ? " selected" : "";
-        return `<option value="${escapeHtmlAttribute(summary.column)}"${selected}>${escapeHtml(summary.column)}</option>`;
+        return `<option value="${escapeHtmlAttribute(summary.column)}"${selected}>${escapeHtml(displayNameForColumn(currentPayload, summary.column))}</option>`;
       })
       .join("");
   }
@@ -2227,6 +2294,10 @@ function renderMissingValuesSummary() {
       missingValuesFocus.innerHTML = '<div class="missing-values-empty">No columns available.</div>';
     } else {
       missingValuesFocus.innerHTML = `
+        <div class="missing-values-metric">
+          <span>Parameter</span>
+          <strong>${escapeHtml(displayNameForColumn(currentPayload, selectedSummary.column))}</strong>
+        </div>
         <div class="missing-values-metric">
           <span>Missing</span>
           <strong>${escapeHtml(formatMissingPercent(selectedSummary.missingPercent))}</strong>
@@ -2257,7 +2328,7 @@ function renderMissingValuesSummary() {
   topSummaries.forEach((summary) => {
     const selectedClass = summary.column === selectedMissingColumn ? ' class="selected"' : "";
     html += `<tr${selectedClass}>`;
-    html += `<th class="stats-parameter">${escapeHtml(summary.column)}</th>`;
+    html += `<th class="stats-parameter">${escapeHtml(displayNameForColumn(currentPayload, summary.column))}</th>`;
     html += `<td>${escapeHtml(formatMissingPercent(summary.missingPercent))}</td>`;
     html += `<td>${escapeHtml(summary.missingCount.toLocaleString())}</td>`;
     html += `<td>${escapeHtml(summary.presentCount.toLocaleString())}</td>`;
@@ -2366,6 +2437,29 @@ function distributionSeriesForSelection(payload, valueColumn, splitColumn = NONE
     .map(([name, values]) => ({ name, values }));
 }
 
+function distributionRowSummary(payload, valueColumn, splitColumn = NONE_OPTION) {
+  const summary = {
+    totalRows: payload?.records?.length || 0,
+    rowsUsed: 0,
+    numericMissing: 0,
+    splitMissing: 0,
+  };
+  if (!payload || !valueColumn) return summary;
+  payload.records.forEach((row) => {
+    const numeric = toFiniteNumber(row[valueColumn]);
+    if (numeric === null) {
+      summary.numericMissing += 1;
+      return;
+    }
+    if (splitColumn && splitColumn !== NONE_OPTION && normalizeValue(row[splitColumn]) === null) {
+      summary.splitMissing += 1;
+      return;
+    }
+    summary.rowsUsed += 1;
+  });
+  return summary;
+}
+
 function flattenDistributionValues(series) {
   return series.flatMap((item) => item.values);
 }
@@ -2427,19 +2521,21 @@ function empiricalCdf(values) {
   };
 }
 
-function renderDistributionSummary(values, totalRows) {
+function renderDistributionSummary(values, rowSummary) {
   if (!distSummaryMetrics) return;
   if (!values.length) {
     distSummaryMetrics.innerHTML = "";
     return;
   }
+  const summary = rowSummary || { rowsUsed: values.length, numericMissing: 0, splitMissing: 0 };
   const metrics = [
-    { label: "Rows Used", value: values.length.toLocaleString() },
-    { label: "Missing", value: Math.max(0, totalRows - values.length).toLocaleString() },
+    { label: "Rows Used", value: summary.rowsUsed.toLocaleString() },
+    { label: "Numeric Missing", value: summary.numericMissing.toLocaleString() },
+    ...(summary.splitMissing ? [{ label: "Split Missing", value: summary.splitMissing.toLocaleString() }] : []),
     { label: "Mean", value: formatStatValue(meanValue(values)) },
     { label: "Median", value: formatStatValue(medianValue(values)) },
     { label: "IQR", value: formatStatValue((quantileValue(values, 0.75) ?? 0) - (quantileValue(values, 0.25) ?? 0)) },
-    { label: "Std Dev", value: formatStatValue(standardDeviation(values)) },
+    { label: "Sample Std Dev", value: formatStatValue(standardDeviation(values)) },
   ];
   distSummaryMetrics.innerHTML = metrics.map((item) => `
       <div class="corr-metric-card">
@@ -2450,12 +2546,19 @@ function renderDistributionSummary(values, totalRows) {
 }
 
 function distributionLegendName(item, valueColumn, splitColumn) {
-  return splitColumn && splitColumn !== NONE_OPTION ? `${splitColumn}: ${item.name}` : valueColumn;
+  return splitColumn && splitColumn !== NONE_OPTION
+    ? `${currentDisplayNameForColumn(splitColumn)}: ${item.name}`
+    : currentDisplayNameForColumn(valueColumn);
 }
 
 function distributionColor(index, splitColumn) {
   if (!splitColumn || splitColumn === NONE_OPTION) return DISTRIBUTION_SINGLE_COLOR;
   return DISTRIBUTION_GROUP_COLORS[index % DISTRIBUTION_GROUP_COLORS.length];
+}
+
+function distributionLineColor(index, splitColumn) {
+  if (!splitColumn || splitColumn === NONE_OPTION) return "#f8fafc";
+  return DISTRIBUTION_LINE_COLORS[index % DISTRIBUTION_LINE_COLORS.length];
 }
 
 function renderDistributionEmpty(message) {
@@ -2477,7 +2580,7 @@ function populateSimpleSelect(select, options, selectedValue) {
   options.forEach((value) => {
     const option = document.createElement("option");
     option.value = value;
-    option.textContent = value;
+    option.textContent = value === NONE_OPTION ? "None" : currentDisplayNameForColumn(value);
     select.appendChild(option);
   });
   if (selectedValue && options.includes(selectedValue)) {
@@ -2863,6 +2966,8 @@ function renderPairMetrics(summary, regression) {
 
 function renderPairScatterPlot(xColumn, yColumn, aligned, summary, targetId, regression = null) {
   const target = document.getElementById(targetId);
+  const xLabel = currentDisplayNameForColumn(xColumn);
+  const yLabel = currentDisplayNameForColumn(yColumn);
   if (!target) return;
   if (aligned.xValues.length < 2) {
     renderCorrelationEmpty(target, "Not enough overlapping numeric rows to plot this pair.");
@@ -2884,7 +2989,7 @@ function renderPairScatterPlot(xColumn, yColumn, aligned, summary, targetId, reg
       opacity: currentCorrelationPointOpacity(),
       line: { width: 0 },
     },
-    hovertemplate: `${escapeHtml(xColumn)}: %{x}<br>${escapeHtml(yColumn)}: %{y}<extra></extra>`,
+    hovertemplate: `${escapeHtml(xLabel)}: %{x}<br>${escapeHtml(yLabel)}: %{y}<extra></extra>`,
     name: "Rows",
   }];
 
@@ -2929,13 +3034,13 @@ function renderPairScatterPlot(xColumn, yColumn, aligned, summary, targetId, reg
       font: { color: "#e8ebf4" },
     },
     xaxis: {
-      title: { text: `X: ${xColumn}`, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
+	      title: { text: `X: ${xLabel}`, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
       tickfont: { color: "#e8ebf4" },
       gridcolor: "rgba(16, 33, 50, 0.16)",
       zerolinecolor: "rgba(16, 33, 50, 0.2)",
     },
     yaxis: {
-      title: { text: `Y: ${yColumn}`, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
+	      title: { text: `Y: ${yLabel}`, font: { color: "#e8ebf4", size: 13 }, standoff: 10 },
       tickfont: { color: "#e8ebf4" },
       gridcolor: "rgba(16, 33, 50, 0.16)",
       zerolinecolor: "rgba(16, 33, 50, 0.2)",
@@ -3097,7 +3202,7 @@ function renderFocusedMatrixScatter() {
   const fitCopy = regression
     ? `${regression.label} fit | R²: ${formatCorrelationValue(regression.rSquared)}`
     : "No trendline";
-  corrFocusTitle.textContent = `${xColumn} vs ${yColumn} | Pearson: ${formatCorrelationValue(summary.pearson)} | Spearman: ${formatCorrelationValue(summary.spearman)} | ${fitCopy} | N: ${summary.n.toLocaleString()}`;
+  corrFocusTitle.textContent = `${currentDisplayNameForColumn(xColumn)} vs ${currentDisplayNameForColumn(yColumn)} | Pearson: ${formatCorrelationValue(summary.pearson)} | Spearman: ${formatCorrelationValue(summary.spearman)} | ${fitCopy} | N: ${summary.n.toLocaleString()}`;
   renderPairScatterPlot(xColumn, yColumn, aligned, summary, "corr-focus-plot", regression);
 }
 
@@ -3139,11 +3244,16 @@ function renderCorrelationMatrixExplorer() {
     renderCorrelationEmpty(corrMatrixHeatmap, "Plotly is not loaded, so charts are unavailable.");
   } else {
     corrMatrixHeatmap.innerHTML = "";
+    const matrixLabels = selectedMatrixColumns.map((column) => currentDisplayNameForColumn(column));
+    const matrixCustomData = selectedMatrixColumns.map((yColumn) => (
+      selectedMatrixColumns.map((xColumn) => [xColumn, yColumn])
+    ));
     const heatmapPromise = Plotly.newPlot("corr-matrix-heatmap", [{
       type: "heatmap",
       z: built.matrix,
-      x: selectedMatrixColumns,
-      y: selectedMatrixColumns,
+      x: matrixLabels,
+      y: matrixLabels,
+      customdata: matrixCustomData,
       zmin: -1,
       zmax: 1,
       colorscale: [
@@ -3186,8 +3296,10 @@ function renderCorrelationMatrixExplorer() {
         node.on("plotly_click", (event) => {
           const point = event?.points?.[0];
           if (!point) return;
-          const xColumn = String(point.x);
-          const yColumn = String(point.y);
+          const [rawXColumn, rawYColumn] = Array.isArray(point.customdata) ? point.customdata : [];
+          const xColumn = rawXColumn || selectedMatrixColumns[matrixLabels.indexOf(String(point.x))];
+          const yColumn = rawYColumn || selectedMatrixColumns[matrixLabels.indexOf(String(point.y))];
+          if (!xColumn || !yColumn) return;
           if (xColumn === yColumn) {
             focusedMatrixPair = { xColumn, yColumn };
             renderFocusedMatrixScatter();
@@ -3346,9 +3458,12 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
   let yAxisTitle = "Value";
   let yAxis2 = null;
   let barmode = "overlay";
+  const valueLabel = currentDisplayNameForColumn(valueColumn);
+  const splitLabel = splitColumn && splitColumn !== NONE_OPTION ? currentDisplayNameForColumn(splitColumn) : "Distribution";
 
   series.forEach((item, index) => {
     const color = distributionColor(index, splitColumn);
+    const lineColor = distributionLineColor(index, splitColumn);
     const name = distributionLegendName(item, valueColumn, splitColumn);
     if (mode === "histogram") {
       traces.push({
@@ -3361,7 +3476,7 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
         histnorm: overlayMode === "kde"
           ? "probability density"
           : (distributionNormalization === "count" ? "" : (distributionNormalization === "density" ? "probability density" : "probability")),
-        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{x}<br>${overlayMode === "kde" || distributionNormalization === "density" ? "Density" : distributionNormalization === "probability" ? "Probability" : "Count"}: %{y}<extra></extra>`,
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueLabel)}: %{x}<br>${overlayMode === "kde" || distributionNormalization === "density" ? "Density" : distributionNormalization === "probability" ? "Probability" : "Count"}: %{y}<extra></extra>`,
       });
       if (overlayMode === "kde") {
         const curve = kdeCurve(item.values, grid);
@@ -3371,8 +3486,8 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
           x: curve.x,
           y: curve.y,
           name: `${name} KDE`,
-          line: { color, width: 2.5 },
-          hovertemplate: `${escapeHtml(name)} KDE<br>${escapeHtml(valueColumn)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
+          line: { color: lineColor, width: 3.5, dash: "dash" },
+          hovertemplate: `${escapeHtml(name)} KDE<br>${escapeHtml(valueLabel)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
         });
       }
       yAxisTitle = overlayMode === "kde"
@@ -3389,8 +3504,8 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
         x: curve.x,
         y: curve.y,
         name,
-        line: { color, width: 2.5 },
-        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
+        line: { color: lineColor, width: 3.2 },
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueLabel)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
       });
       yAxisTitle = "Density";
       if (overlayMode === "cdf") {
@@ -3401,9 +3516,9 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
           x: cdf.x,
           y: cdf.y,
           name: `${name} CDF`,
-          line: { color, width: 1.8, dash: "dot" },
+          line: { color: lineColor, width: 2.6, dash: "dot" },
           yaxis: "y2",
-          hovertemplate: `${escapeHtml(name)} CDF<br>${escapeHtml(valueColumn)}: %{x}<br>Cumulative: %{y:.3f}<extra></extra>`,
+          hovertemplate: `${escapeHtml(name)} CDF<br>${escapeHtml(valueLabel)}: %{x}<br>Cumulative: %{y:.3f}<extra></extra>`,
         });
         yAxis2 = { title: "Cumulative Probability", overlaying: "y", side: "right", rangemode: "tozero", tickformat: ".0%" };
       }
@@ -3418,8 +3533,8 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
         x: cdf.x,
         y: cdf.y,
         name,
-        line: { color, width: 2.5, shape: "hv" },
-        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{x}<br>Cumulative: %{y:.3f}<extra></extra>`,
+        line: { color: lineColor, width: 3.2, shape: "hv" },
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueLabel)}: %{x}<br>Cumulative: %{y:.3f}<extra></extra>`,
       });
       yAxisTitle = "Cumulative Probability";
       if (overlayMode === "kde") {
@@ -3430,9 +3545,9 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
           x: curve.x,
           y: curve.y,
           name: `${name} KDE`,
-          line: { color, width: 1.8, dash: "dot" },
+          line: { color: lineColor, width: 2.6, dash: "dot" },
           yaxis: "y2",
-          hovertemplate: `${escapeHtml(name)} KDE<br>${escapeHtml(valueColumn)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
+          hovertemplate: `${escapeHtml(name)} KDE<br>${escapeHtml(valueLabel)}: %{x}<br>Density: %{y:.4f}<extra></extra>`,
         });
         yAxis2 = { title: "Density", overlaying: "y", side: "right", rangemode: "tozero" };
       }
@@ -3449,9 +3564,9 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
         boxpoints: splitColumn && splitColumn !== NONE_OPTION ? false : "outliers",
         jitter: splitColumn && splitColumn !== NONE_OPTION ? 0 : 0.3,
         pointpos: 0,
-        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{y}<extra></extra>`,
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueLabel)}: %{y}<extra></extra>`,
       });
-      yAxisTitle = valueColumn;
+      yAxisTitle = valueLabel;
       barmode = "group";
       return;
     }
@@ -3467,9 +3582,9 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
         box: { visible: true },
         meanline: { visible: true },
         points: splitColumn && splitColumn !== NONE_OPTION ? false : "outliers",
-        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{y}<extra></extra>`,
+        hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueLabel)}: %{y}<extra></extra>`,
       });
-      yAxisTitle = valueColumn;
+      yAxisTitle = valueLabel;
       barmode = "group";
     }
   });
@@ -3492,7 +3607,7 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
       font: { color: DISTRIBUTION_FONT_COLOR },
     },
     xaxis: {
-      title: { text: mode === "box" || mode === "violin" ? (splitColumn && splitColumn !== NONE_OPTION ? splitColumn : "Distribution") : valueColumn, font: { color: DISTRIBUTION_FONT_COLOR, size: 13 }, standoff: 10 },
+      title: { text: mode === "box" || mode === "violin" ? splitLabel : valueLabel, font: { color: DISTRIBUTION_FONT_COLOR, size: 13 }, standoff: 10 },
       tickfont: { color: DISTRIBUTION_FONT_COLOR },
       gridcolor: DISTRIBUTION_GRID_COLOR,
       zerolinecolor: DISTRIBUTION_ZERO_LINE_COLOR,
@@ -3526,6 +3641,8 @@ function renderDistributionPlotForSeries(series, valueColumn, splitColumn, mode,
 }
 
 function renderDistributionShapePlots(series, valueColumn, splitColumn) {
+  const valueLabel = currentDisplayNameForColumn(valueColumn);
+  const splitLabel = splitColumn && splitColumn !== NONE_OPTION ? currentDisplayNameForColumn(splitColumn) : "Distribution";
   const commonLayout = {
     paper_bgcolor: DISTRIBUTION_PAPER_BG,
     plot_bgcolor: DISTRIBUTION_PLOT_BG,
@@ -3534,7 +3651,7 @@ function renderDistributionShapePlots(series, valueColumn, splitColumn) {
     showlegend: false,
     xaxis: {
       title: {
-        text: splitColumn && splitColumn !== NONE_OPTION ? splitColumn : "Distribution",
+        text: splitLabel,
         font: { color: DISTRIBUTION_FONT_COLOR, size: 13 },
         standoff: 10,
       },
@@ -3543,7 +3660,7 @@ function renderDistributionShapePlots(series, valueColumn, splitColumn) {
       zerolinecolor: DISTRIBUTION_ZERO_LINE_COLOR,
     },
     yaxis: {
-      title: { text: valueColumn, font: { color: DISTRIBUTION_FONT_COLOR, size: 13 }, standoff: 10 },
+      title: { text: valueLabel, font: { color: DISTRIBUTION_FONT_COLOR, size: 13 }, standoff: 10 },
       tickfont: { color: DISTRIBUTION_FONT_COLOR },
       gridcolor: DISTRIBUTION_GRID_COLOR,
       zerolinecolor: DISTRIBUTION_ZERO_LINE_COLOR,
@@ -3564,7 +3681,7 @@ function renderDistributionShapePlots(series, valueColumn, splitColumn) {
       boxpoints: splitColumn && splitColumn !== NONE_OPTION ? false : "outliers",
       jitter: splitColumn && splitColumn !== NONE_OPTION ? 0 : 0.3,
       pointpos: 0,
-      hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{y}<extra></extra>`,
+      hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueLabel)}: %{y}<extra></extra>`,
     });
     violinTraces.push({
       type: "violin",
@@ -3576,7 +3693,7 @@ function renderDistributionShapePlots(series, valueColumn, splitColumn) {
       box: { visible: true },
       meanline: { visible: true },
       points: splitColumn && splitColumn !== NONE_OPTION ? false : "outliers",
-      hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueColumn)}: %{y}<extra></extra>`,
+      hovertemplate: `${escapeHtml(name)}<br>${escapeHtml(valueLabel)}: %{y}<extra></extra>`,
     });
   });
 
@@ -3619,7 +3736,7 @@ function renderDistributionView() {
     splitOptions.forEach((value) => {
       const option = document.createElement("option");
       option.value = value;
-      option.textContent = value === NONE_OPTION ? "None" : value;
+      option.textContent = value === NONE_OPTION ? "None" : currentDisplayNameForColumn(value);
       distSplitSelect.appendChild(option);
     });
     distSplitSelect.value = splitOptions.includes(distributionSplitColumn) ? distributionSplitColumn : NONE_OPTION;
@@ -3627,11 +3744,6 @@ function renderDistributionView() {
   }
 
   if (distViewSelect) distViewSelect.value = distributionViewMode;
-  if (distNormalizationSelect) {
-    distNormalizationSelect.value = distributionNormalization;
-    distNormalizationSelect.disabled = distributionViewMode !== "histogram";
-  }
-
   const overlayOptions = distributionOverlayOptionsForMode(distributionViewMode);
   if (distOverlaySelect) {
     distOverlaySelect.innerHTML = "";
@@ -3648,6 +3760,11 @@ function renderDistributionView() {
     distOverlaySelect.disabled = overlayOptions.length === 1;
   }
 
+  if (distNormalizationSelect) {
+    distNormalizationSelect.value = distributionOverlayMode === "kde" ? "density" : distributionNormalization;
+    distNormalizationSelect.disabled = distributionViewMode !== "histogram" || distributionOverlayMode === "kde";
+  }
+
   if (distBinControl) {
     distBinControl.classList.toggle("hidden", distributionViewMode !== "histogram");
   }
@@ -3657,7 +3774,7 @@ function renderDistributionView() {
 
   const series = distributionSeriesForSelection(currentPayload, distributionColumn, distributionSplitColumn);
   const allValues = flattenDistributionValues(series);
-  renderDistributionSummary(allValues, currentPayload.records.length);
+  renderDistributionSummary(allValues, distributionRowSummary(currentPayload, distributionColumn, distributionSplitColumn));
   renderDistributionPlotForSeries(series, distributionColumn, distributionSplitColumn, distributionViewMode, distributionOverlayMode);
   renderDistributionShapePlots(series, distributionColumn, distributionSplitColumn);
 }
@@ -3849,6 +3966,8 @@ function outlierSummaryForColumn(payload, column, method, threshold) {
         const score = Math.abs((0.6745 * (value - center)) / spread);
         if (score > threshold) flaggedIndices.set(index, score / threshold);
       });
+    } else {
+      ruleLabel = "MAD is 0; modified z-score undefined";
     }
   } else {
     const q1 = quantileValue(values, 0.25);
@@ -4217,7 +4336,7 @@ function renderOutlierColumnTable(analysis) {
     const rate = summary.usableCount ? `${((summary.flaggedCount / summary.usableCount) * 100).toFixed(1)}%` : "0.0%";
     const isSelected = summary.column === analysis.focusColumn ? " selected" : "";
     html += `<tr class="outlier-click-row${isSelected}" data-outlier-column="${escapeHtmlAttribute(summary.column)}" tabindex="0">
-      <th class="stats-parameter">${escapeHtml(summary.column)}</th>
+      <th class="stats-parameter">${escapeHtml(displayNameForColumn(currentPayload, summary.column))}</th>
       <td>${escapeHtml(summary.flaggedCount.toLocaleString())}</td>
       <td>${escapeHtml(rate)}</td>
       <td>${escapeHtml(summary.ruleLabel)}</td>
@@ -4265,8 +4384,8 @@ function renderOutlierRowTable(analysis) {
   });
   html += "</tr></thead><tbody>";
   analysis.flaggedRows.slice(0, OUTLIER_ROW_TABLE_LIMIT).forEach((entry) => {
-    const columnList = entry.flaggedColumns.map((item) => item.column).join(", ");
-    const preview = entry.flaggedColumns.slice(0, 4).map((item) => `${item.column}: ${formatStatValue(item.value)}`).join(" | ");
+    const columnList = entry.flaggedColumns.map((item) => displayNameForColumn(currentPayload, item.column)).join(", ");
+    const preview = entry.flaggedColumns.slice(0, 4).map((item) => `${displayNameForColumn(currentPayload, item.column)}: ${formatStatValue(item.value)}`).join(" | ");
     const isSelected = entry.index === analysis.selectedRow?.index ? " selected" : "";
     html += `<tr class="outlier-click-row${isSelected}" data-outlier-row-index="${escapeHtmlAttribute(String(entry.index))}" tabindex="0">
       <th class="stats-parameter"><span class="outlier-row-id">${escapeHtml(entry.label)}</span></th>
@@ -4305,6 +4424,8 @@ function renderOutlierScatterPlot(analysis) {
     return;
   }
   const [xColumn, yColumn] = analysis.scatterColumns;
+  const xLabel = displayNameForColumn(currentPayload, xColumn);
+  const yLabel = displayNameForColumn(currentPayload, yColumn);
   const flaggedIndices = new Set(analysis.flaggedRows.map((entry) => entry.index));
   const regular = { x: [], y: [], text: [], customdata: [] };
   const flagged = { x: [], y: [], text: [], customdata: [] };
@@ -4343,7 +4464,7 @@ function renderOutlierScatterPlot(analysis) {
       text: regular.text,
       customdata: regular.customdata,
       marker: { color: "rgba(148, 163, 184, 0.45)", size: 8 },
-      hovertemplate: "%{text}<br>" + escapeHtml(xColumn) + ": %{x}<br>" + escapeHtml(yColumn) + ": %{y}<extra></extra>",
+	      hovertemplate: "%{text}<br>" + escapeHtml(xLabel) + ": %{x}<br>" + escapeHtml(yLabel) + ": %{y}<extra></extra>",
     },
     {
       type: "scatter",
@@ -4354,7 +4475,7 @@ function renderOutlierScatterPlot(analysis) {
       text: flagged.text,
       customdata: flagged.customdata,
       marker: { color: "#ff8a1f", size: 10, line: { color: "#fff1d6", width: 1 } },
-      hovertemplate: "%{text}<br>" + escapeHtml(xColumn) + ": %{x}<br>" + escapeHtml(yColumn) + ": %{y}<extra></extra>",
+	      hovertemplate: "%{text}<br>" + escapeHtml(xLabel) + ": %{x}<br>" + escapeHtml(yLabel) + ": %{y}<extra></extra>",
     },
   ];
   if (selected.x.length) {
@@ -4367,7 +4488,7 @@ function renderOutlierScatterPlot(analysis) {
       text: selected.text,
       customdata: selected.customdata,
       marker: { color: "#ffe26d", size: 14, symbol: "diamond", line: { color: "#fff7d1", width: 2 } },
-      hovertemplate: "%{text}<br>" + escapeHtml(xColumn) + ": %{x}<br>" + escapeHtml(yColumn) + ": %{y}<extra></extra>",
+	      hovertemplate: "%{text}<br>" + escapeHtml(xLabel) + ": %{x}<br>" + escapeHtml(yLabel) + ": %{y}<extra></extra>",
     });
   }
   const renderPromise = Plotly.newPlot("outlier-scatter-plot", traces, {
@@ -4385,8 +4506,8 @@ function renderOutlierScatterPlot(analysis) {
       bordercolor: DISTRIBUTION_LEGEND_BORDER,
       borderwidth: 1,
     },
-    xaxis: { title: { text: xColumn }, gridcolor: DISTRIBUTION_GRID_COLOR, tickfont: { color: DISTRIBUTION_FONT_COLOR } },
-    yaxis: { title: { text: yColumn }, gridcolor: DISTRIBUTION_GRID_COLOR, tickfont: { color: DISTRIBUTION_FONT_COLOR } },
+    xaxis: { title: { text: xLabel }, gridcolor: DISTRIBUTION_GRID_COLOR, tickfont: { color: DISTRIBUTION_FONT_COLOR } },
+    yaxis: { title: { text: yLabel }, gridcolor: DISTRIBUTION_GRID_COLOR, tickfont: { color: DISTRIBUTION_FONT_COLOR } },
   }, {
     responsive: true,
     displaylogo: false,
@@ -4424,6 +4545,7 @@ function renderOutlierHistogram(analysis) {
     return;
   }
   const summary = analysis.columnSummaries.find((item) => item.column === focusColumn);
+  const focusLabel = displayNameForColumn(currentPayload, focusColumn);
   const flaggedIndices = summary ? new Set(summary.flaggedIndices.keys()) : new Set();
   const selectedValue = analysis.selectedRow ? toFiniteNumber(analysis.selectedRow.row[focusColumn]) : null;
   const allValues = [];
@@ -4448,7 +4570,7 @@ function renderOutlierHistogram(analysis) {
       marker: { color: "rgba(143, 61, 255, 0.78)" },
       opacity: 0.78,
       nbinsx: 28,
-      hovertemplate: `${escapeHtml(focusColumn)}: %{x}<br>Count: %{y}<extra></extra>`,
+      hovertemplate: `${escapeHtml(focusLabel)}: %{x}<br>Count: %{y}<extra></extra>`,
     },
     {
       type: "histogram",
@@ -4457,7 +4579,7 @@ function renderOutlierHistogram(analysis) {
       marker: { color: "rgba(255, 138, 31, 0.92)" },
       opacity: 0.88,
       nbinsx: 28,
-      hovertemplate: `${escapeHtml(focusColumn)}: %{x}<br>Flagged count: %{y}<extra></extra>`,
+      hovertemplate: `${escapeHtml(focusLabel)}: %{x}<br>Flagged count: %{y}<extra></extra>`,
     },
   ], {
     paper_bgcolor: DISTRIBUTION_PAPER_BG,
@@ -4475,7 +4597,7 @@ function renderOutlierHistogram(analysis) {
       bordercolor: DISTRIBUTION_LEGEND_BORDER,
       borderwidth: 1,
     },
-    xaxis: { title: { text: focusColumn }, gridcolor: DISTRIBUTION_GRID_COLOR, tickfont: { color: DISTRIBUTION_FONT_COLOR } },
+    xaxis: { title: { text: focusLabel }, gridcolor: DISTRIBUTION_GRID_COLOR, tickfont: { color: DISTRIBUTION_FONT_COLOR } },
     yaxis: { title: { text: "Count" }, gridcolor: DISTRIBUTION_GRID_COLOR, tickfont: { color: DISTRIBUTION_FONT_COLOR } },
     shapes: selectedValue === null ? [] : [{
       type: "line",
@@ -4593,6 +4715,10 @@ function setOuterView(view) {
   statisticsTab.classList.toggle("active", showStatistics);
   distributionTab.classList.toggle("active", showDistribution);
   correlationTab.classList.toggle("active", showCorrelation);
+  dashboardTab.setAttribute("aria-selected", showDashboard ? "true" : "false");
+  statisticsTab.setAttribute("aria-selected", showStatistics ? "true" : "false");
+  distributionTab.setAttribute("aria-selected", showDistribution ? "true" : "false");
+  correlationTab.setAttribute("aria-selected", showCorrelation ? "true" : "false");
   dashboardPanel.classList.toggle("hidden", !showDashboard);
   transformationPanel.classList.toggle("hidden", !showTransformation);
   statisticsPanel.classList.toggle("hidden", !showStatistics);
@@ -4662,6 +4788,12 @@ function coerceNumericLikeColumns(records, columns) {
   columns.forEach((column) => {
     const values = prepared.map((row) => normalizeValue(row[column]));
     const nonNull = values.filter((value) => value !== null);
+    if (!nonNull.length) {
+      prepared.forEach((row) => {
+        row[column] = null;
+      });
+      return;
+    }
 
     let isNumeric = true;
     for (const value of nonNull) {
@@ -4734,7 +4866,7 @@ function defaultColumn(options, excluded = new Set()) {
   return null;
 }
 
-function buildPayload(records, title) {
+function buildPayload(records, title, displayNames = {}) {
   const columns = records.length ? Object.keys(records[0]) : [];
   const { prepared, numericColumns } = coerceNumericLikeColumns(records, columns);
 
@@ -4771,6 +4903,7 @@ function buildPayload(records, title) {
     title,
     records: prepared,
     columns,
+    display_names: Object.fromEntries(columns.map((column) => [column, displayNames[column] || column])),
     numeric_columns: numericColumns,
     color_columns: colorColumns,
     defaults: {
@@ -4823,9 +4956,9 @@ function buildDashboardHtml(payload, persistedViewState = null) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(APP_TITLE)} | ${escapeHtml(payload.title)}</title>
-  <link rel="icon" type="image/png" href="/favicon.ico" />
-  <link rel="shortcut icon" href="/favicon.ico" />
-  <link rel="apple-touch-icon" href="/favicon.ico" />
+  <link rel="icon" type="image/x-icon" href="./favicon.ico" />
+  <link rel="shortcut icon" href="./favicon.ico" />
+  <link rel="apple-touch-icon" href="./favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -5249,7 +5382,7 @@ function buildDashboardHtml(payload, persistedViewState = null) {
       options.forEach((value) => {
         const option = document.createElement("option");
         option.value = value;
-        option.textContent = value;
+        option.textContent = displayColumnName(value);
         select.appendChild(option);
       });
       if (selectedValue && [...select.options].some((option) => option.value === selectedValue)) {
@@ -5259,6 +5392,11 @@ function buildDashboardHtml(payload, persistedViewState = null) {
       } else if (select.options.length > 0) {
         select.selectedIndex = 0;
       }
+    }
+
+    function displayColumnName(column) {
+      if (!column || column === NONE_OPTION) return column;
+      return DATASET.display_names?.[column] || column;
     }
 
     function toFiniteNumber(value) {
@@ -5354,11 +5492,11 @@ function buildDashboardHtml(payload, persistedViewState = null) {
     function hoverTemplate(hoverIdColumn, xColumn, yColumn, zColumn, colorColumn, sizeColumn) {
       const lines = [];
       if (hoverIdColumn !== NONE_OPTION) lines.push("<b>%{customdata[0]}</b>");
-      lines.push(xColumn + ": %{customdata[1]}");
-      lines.push(yColumn + ": %{customdata[2]}");
-      lines.push(zColumn + ": %{customdata[3]}");
-      if (colorColumn !== NONE_OPTION) lines.push(colorColumn + ": %{customdata[4]}");
-      if (sizeColumn !== NONE_OPTION) lines.push(sizeColumn + ": %{customdata[5]}");
+      lines.push(displayColumnName(xColumn) + ": %{customdata[1]}");
+      lines.push(displayColumnName(yColumn) + ": %{customdata[2]}");
+      lines.push(displayColumnName(zColumn) + ": %{customdata[3]}");
+      if (colorColumn !== NONE_OPTION) lines.push(displayColumnName(colorColumn) + ": %{customdata[4]}");
+      if (sizeColumn !== NONE_OPTION) lines.push(displayColumnName(sizeColumn) + ": %{customdata[5]}");
       lines.push("<extra></extra>");
       return lines.join("<br>");
     }
@@ -5383,9 +5521,9 @@ function buildDashboardHtml(payload, persistedViewState = null) {
     }
 
     function baseLayout(xColumn, yColumn, zColumn) {
-      const xTitle = logX.checked ? "log10(" + xColumn + ")" : xColumn;
-      const yTitle = logY.checked ? "log10(" + yColumn + ")" : yColumn;
-      const zTitle = logZ.checked ? "log10(" + zColumn + ")" : zColumn;
+      const xTitle = logX.checked ? "log10(" + displayColumnName(xColumn) + ")" : displayColumnName(xColumn);
+      const yTitle = logY.checked ? "log10(" + displayColumnName(yColumn) + ")" : displayColumnName(yColumn);
+      const zTitle = logZ.checked ? "log10(" + displayColumnName(zColumn) + ")" : displayColumnName(zColumn);
       return {
         paper_bgcolor: "#ffffff",
         plot_bgcolor: "#ffffff",
@@ -5524,7 +5662,7 @@ function buildDashboardHtml(payload, persistedViewState = null) {
             opacity: Number(opacitySlider.value),
             color: coloredValues,
             colorscale: "Viridis",
-            colorbar: { title: colorColumn },
+            colorbar: { title: displayColumnName(colorColumn) },
             line: { width: 0 },
           },
         });
@@ -5601,9 +5739,9 @@ function buildDashboardHtml(payload, persistedViewState = null) {
       totalRowsNode.textContent = DATASET.records.length.toLocaleString();
       plottedRowsNode.textContent = points.length.toLocaleString();
       plotTitleNode.textContent = DATASET.title;
-      xPillNode.textContent = logX.checked ? "log10(" + xColumn + ")" : xColumn;
-      yPillNode.textContent = logY.checked ? "log10(" + yColumn + ")" : yColumn;
-      zPillNode.textContent = logZ.checked ? "log10(" + zColumn + ")" : zColumn;
+      xPillNode.textContent = logX.checked ? "log10(" + displayColumnName(xColumn) + ")" : displayColumnName(xColumn);
+      yPillNode.textContent = logY.checked ? "log10(" + displayColumnName(yColumn) + ")" : displayColumnName(yColumn);
+      zPillNode.textContent = logZ.checked ? "log10(" + displayColumnName(zColumn) + ")" : displayColumnName(zColumn);
       const noteParts = [];
       if (aligned.excludedForMissing) noteParts.push(String(aligned.excludedForMissing) + " rows excluded for missing X/Y/Z values.");
       if (aligned.excludedForLog) noteParts.push(String(aligned.excludedForLog) + " rows excluded because log axes need values > 0.");

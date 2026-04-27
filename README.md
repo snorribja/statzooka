@@ -8,13 +8,14 @@ This project is now a static site designed for GitHub Pages.
 
 - `site/index.html`: the main upload page
 - `site/assets/app.js`: browser-side CSV parsing and dashboard generation
-- `site/favicon.png`: the favicon shared with `snorribjarkason.com`
+- `site/favicon.ico`: the favicon used by the static site
 - `csv_3d_dashboard.py`: the original Python CLI generator for standalone HTML export
 
 ## Features
 
 - Drag-and-drop CSV upload
 - Generic CSV support, not tied to a specific domain
+- Browser-side CSV parsing and analysis; the page still loads pinned third-party libraries from CDNs
 - Interactive 3D scatter plot with selectable axes, color, size, and hover fields
 - Modern dark shell UI with a white chart surface
 - Static deployment on GitHub Pages
@@ -34,6 +35,14 @@ Then open:
 
 ```text
 http://127.0.0.1:8000
+```
+
+## Smoke tests
+
+The static app has a dependency-free JavaScript smoke test for core statistics and data-prep behavior:
+
+```bash
+node tests/stat_smoke.test.js
 ```
 
 ## Python CLI usage

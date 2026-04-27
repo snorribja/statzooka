@@ -4,15 +4,30 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CSV 3D Explorer</title>
-  <link rel="icon" type="image/png" href="/favicon.ico" />
-  <link rel="shortcut icon" href="/favicon.ico" />
-  <link rel="apple-touch-icon" href="/favicon.ico" />
+  <meta name="description" content="Upload a CSV and explore numeric columns with an interactive 3D dashboard, descriptive statistics, distributions, correlations, and outlier review." />
+  <meta property="og:title" content="CSV 3D Explorer" />
+  <meta property="og:description" content="Browser-based CSV exploration with 3D charts, descriptive statistics, distributions, correlations, and outlier diagnostics." />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary" />
+  <link rel="icon" type="image/x-icon" href="./favicon.ico" />
+  <link rel="shortcut icon" href="./favicon.ico" />
+  <link rel="apple-touch-icon" href="./favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
     href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap"
     rel="stylesheet"
   />
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      "name": "CSV 3D Explorer",
+      "applicationCategory": "DataVisualizationApplication",
+      "operatingSystem": "Web",
+      "description": "Browser-based CSV exploration with 3D charts, descriptive statistics, distributions, correlations, and outlier diagnostics."
+    }
+  </script>
   <link rel="stylesheet" href="./assets/styles.css?v=20260424-34" />
 </head>
 <body>
@@ -21,7 +36,7 @@
     <section class="panel">
       <div class="eyebrow">CSV to Website</div>
       <h1>Drop in a file. Use the dashboard.</h1>
-      <p class="lede">Upload a CSV and the 3D dashboard opens immediately on the right. All processing happens locally in your browser - no data is sent over the internet, so you can safely work with sensitive data.</p>
+      <p class="lede">Upload a CSV and the 3D dashboard opens immediately on the right.</p>
 
       <form id="upload-form">
         <input id="csv-file" name="csv_file" type="file" accept=".csv,text/csv" />
@@ -37,6 +52,7 @@
         <div class="actions">
           <button class="secondary" id="clear-button" type="button">Clear</button>
         </div>
+
       </form>
 
       <section class="prep-summary-card" id="prep-summary-card" aria-labelledby="prep-summary-title">
@@ -62,11 +78,11 @@
     <!-- Dashboard, statistics, and correlation views -->
     <section class="viewer">
       <div class="viewer-header">
-        <div class="viewer-tabs">
-          <button class="viewer-tab active" id="dashboard-tab" type="button">3D Dashboard</button>
-          <button class="viewer-tab" id="statistics-tab" type="button">Statistics</button>
-          <button class="viewer-tab" id="distribution-tab" type="button">Distributions</button>
-          <button class="viewer-tab" id="correlation-tab" type="button">Correlation</button>
+        <div class="viewer-tabs" role="tablist" aria-label="Dashboard views">
+          <button class="viewer-tab active" id="dashboard-tab" type="button" role="tab" aria-selected="true" aria-controls="dashboard-panel">3D Dashboard</button>
+          <button class="viewer-tab" id="statistics-tab" type="button" role="tab" aria-selected="false" aria-controls="statistics-panel">Statistics</button>
+          <button class="viewer-tab" id="distribution-tab" type="button" role="tab" aria-selected="false" aria-controls="distribution-panel">Distributions</button>
+          <button class="viewer-tab" id="correlation-tab" type="button" role="tab" aria-selected="false" aria-controls="correlation-panel">Correlation</button>
         </div>
         <div class="viewer-context" id="viewer-context">No dashboard loaded yet</div>
       </div>
@@ -86,7 +102,7 @@
           </div>
         </div>
         <div class="viewer-panel" id="dashboard-panel">
-          <iframe id="dashboard-frame" title="Dashboard preview"></iframe>
+          <iframe id="dashboard-frame" title="Dashboard preview" sandbox="allow-scripts allow-downloads"></iframe>
         </div>
         <div class="viewer-panel hidden" id="transformation-panel">
           <div class="transform-stage">
@@ -184,6 +200,7 @@
                           </div>
                         </div>
                       </details>
+
                     </section>
 
                     <section class="transform-section">
@@ -356,7 +373,7 @@
                             <button class="corr-small-button" id="outlier-scatter-save-button" type="button">Save Plot</button>
                           </div>
                         </div>
-                        <div class="corr-plot outlier-plot" id="outlier-scatter-plot"></div>
+                        <div class="corr-plot outlier-plot" id="outlier-scatter-plot" role="img" aria-label="Outlier review scatter plot"></div>
                       </div>
                       <div class="outlier-plot-card">
                         <div class="outlier-section-header">
@@ -365,7 +382,7 @@
                             <button class="corr-small-button" id="outlier-hist-save-button" type="button">Save Plot</button>
                           </div>
                         </div>
-                        <div class="corr-plot outlier-plot" id="outlier-histogram-plot"></div>
+                        <div class="corr-plot outlier-plot" id="outlier-histogram-plot" role="img" aria-label="Outlier distribution histogram"></div>
                       </div>
                     </div>
                   </main>
@@ -439,6 +456,7 @@
         <div class="viewer-panel hidden" id="correlation-panel">
           <div class="correlation-stage">
             <div class="stats-section-title">Correlation Explorer</div>
+            <div class="stats-copy">Correlations and fitted curves describe association in the prepared dataset; they do not establish causation or future predictive performance.</div>
             <div class="corr-mode-switch">
               <button class="corr-mode-button active" id="corr-pair-mode-button" type="button">Pair Explorer</button>
               <button class="corr-mode-button" id="corr-matrix-mode-button" type="button">Matrix Explorer</button>
@@ -453,7 +471,7 @@
                 <label for="corr-fit-select">Trendline</label>
                 <select id="corr-fit-select">
                   <option value="linear">Linear</option>
-                  <option value="nonlinear">Best Non-Linear</option>
+                  <option value="nonlinear">Highest In-Sample Polynomial</option>
                   <option value="none">None</option>
                 </select>
               </div>
@@ -475,7 +493,7 @@
                 <button class="corr-small-button" id="corr-pair-reset-button" type="button">Reset Zoom</button>
                 <button class="corr-small-button" id="corr-pair-save-button" type="button">Save Plot</button>
               </div>
-              <div class="corr-plot" id="corr-pair-plot"></div>
+              <div class="corr-plot" id="corr-pair-plot" role="img" aria-label="Correlation scatter plot"></div>
             </div>
 
             <div class="corr-mode-panel hidden" id="corr-matrix-panel">
@@ -496,7 +514,7 @@
                 </div>
               </div>
               <div class="corr-toggles" id="corr-matrix-toggles"></div>
-              <div class="corr-heatmap" id="corr-matrix-heatmap"></div>
+              <div class="corr-heatmap" id="corr-matrix-heatmap" role="img" aria-label="Correlation matrix heatmap"></div>
               <div class="corr-matrix-note">Click any off-diagonal matrix cell to open that pair in the focused scatter.</div>
               <div class="stats-section-title">Focused Scatter</div>
               <div class="corr-focus-title" id="corr-focus-title">Click a matrix cell to inspect its scatter.</div>
@@ -504,7 +522,7 @@
                 <button class="corr-small-button" id="corr-focus-reset-button" type="button">Reset Zoom</button>
                 <button class="corr-small-button" id="corr-focus-save-button" type="button">Save Plot</button>
               </div>
-              <div class="corr-focus-plot" id="corr-focus-plot"></div>
+              <div class="corr-focus-plot" id="corr-focus-plot" role="img" aria-label="Focused correlation scatter plot"></div>
             </div>
           </div>
         </div>
@@ -576,7 +594,7 @@
                     <button class="corr-small-button" id="dist-save-button" type="button">Save Plot</button>
                   </div>
                 </div>
-                <div class="dist-plot dist-plot-main" id="dist-plot"></div>
+                <div class="dist-plot dist-plot-main" id="dist-plot" role="img" aria-label="Distribution plot"></div>
                 <div class="dist-section-header">
                   <div class="dist-section-title">Shape Summaries</div>
                 </div>
@@ -586,14 +604,14 @@
                       <div class="dist-secondary-title">Box Plot</div>
                       <button class="corr-small-button" id="dist-box-save-button" type="button">Save Plot</button>
                     </div>
-                    <div class="dist-plot dist-plot-secondary" id="dist-box-plot"></div>
+                    <div class="dist-plot dist-plot-secondary" id="dist-box-plot" role="img" aria-label="Box plot"></div>
                   </div>
                   <div class="dist-secondary-card">
                     <div class="dist-secondary-header">
                       <div class="dist-secondary-title">Violin Plot</div>
                       <button class="corr-small-button" id="dist-violin-save-button" type="button">Save Plot</button>
                     </div>
-                    <div class="dist-plot dist-plot-secondary" id="dist-violin-plot"></div>
+                    <div class="dist-plot dist-plot-secondary" id="dist-violin-plot" role="img" aria-label="Violin plot"></div>
                   </div>
                 </div>
               </div>

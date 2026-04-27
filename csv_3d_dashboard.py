@@ -57,6 +57,11 @@ def _coerce_numeric_like_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[s
         series = _normalize_series(prepared[column])
         prepared[column] = series
 
+        non_null = series.dropna()
+        if non_null.empty:
+            prepared[column] = series.mask(series.notna(), pd.NA)
+            continue
+
         if pd.api.types.is_bool_dtype(series):
             prepared[column] = series.astype("Int64")
             numeric_columns.append(column)
@@ -64,10 +69,6 @@ def _coerce_numeric_like_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list[s
 
         if pd.api.types.is_numeric_dtype(series):
             numeric_columns.append(column)
-            continue
-
-        non_null = series.dropna()
-        if non_null.empty:
             continue
 
         numeric_candidate = pd.to_numeric(non_null, errors="coerce")
@@ -171,6 +172,7 @@ def _build_payload(df: pd.DataFrame, *, title: str, max_categorical_levels: int)
         "title": title,
         "records": _json_records(prepared),
         "columns": id_columns,
+        "display_names": {column: column for column in id_columns},
         "numeric_columns": numeric_columns,
         "color_columns": color_columns,
         "defaults": {
@@ -191,9 +193,9 @@ def _dashboard_html(*, payload_json: str, plotly_js: str) -> str:
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CSV 3D Explorer</title>
-  <link rel="icon" type="image/png" href="/static/favicon.ico" />
-  <link rel="shortcut icon" href="/static/favicon.ico" />
-  <link rel="apple-touch-icon" href="/static/favicon.ico" />
+  <link rel="icon" type="image/x-icon" href="favicon.ico" />
+  <link rel="shortcut icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="favicon.ico" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -1215,12 +1217,16 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = _parser().parse_args()
-    output_path, df, payload = write_dashboard_html(
-        args.csv_path,
-        output_path=args.output,
-        title=args.title,
-        max_categorical_levels=args.max_categorical_levels,
-    )
+    try:
+        output_path, df, payload = write_dashboard_html(
+            args.csv_path,
+            output_path=args.output,
+            title=args.title,
+            max_categorical_levels=args.max_categorical_levels,
+        )
+    except (FileNotFoundError, ValueError, pd.errors.ParserError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     print(f"Wrote {output_path}")
     print(f"Rows: {len(df)}")
